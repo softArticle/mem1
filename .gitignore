@@ -1,0 +1,43 @@
+# ---- Rust (mem1-server) ----
+target/
+*.rs.bk
+*.prof*
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# ---- mem1-server: downloaded model & runtime DB ----
+mem1-server/embed_model/
+mem1.db/
+mem1-server/mem1.db/
+
+# ---- Evaluation: generated outputs ----
+evaluation/results/
+evaluation/evaluation_metrics.json
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+.vscode/
+.idea/
+*.log
+
+# ---- Secrets / local env (do not commit) ----
+.env
+.env.*
+
+# ---- Optional ----
+toolchain_data/

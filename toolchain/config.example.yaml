@@ -1,0 +1,15 @@
+# AI Iterative Development Toolchain - Example Config
+# Copy to config.yaml or set env vars.
+
+# Path to mem1 evaluation directory (e.g. mem1/evaluation/)
+# Override with MEM1_EVAL_DIR
+# eval_dir: /path/to/mem1/evaluation
+
+# Where to store runs and metrics (default: ~/.mem1-iter or ./toolchain_data)
+# Override with MEM1_ITER_DATA_DIR
+# data_dir: ~/.mem1-iter
+
+# Retention: keep at most this many runs and runs within this many days
+# Default: 30 runs, 7 days (whichever is more restrictive)
+# retention_runs: 30
+# retention_days: 7

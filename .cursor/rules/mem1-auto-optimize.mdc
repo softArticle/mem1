@@ -1,0 +1,19 @@
+---
+description: When the user wants mem1 auto-optimization or to match mem0, run the mem1-auto-optimize skill.
+globs: ["**/*"]
+alwaysApply: false
+---
+
+# mem1 Auto-Optimize Rule
+
+When the user intent involves any of the following:
+
+- "mem1 自动优化" / "mem1 auto-optimize" / "run mem1 optimization"
+- "打平 mem0" / "match mem0" / "reach mem0 baseline"
+- "迭代优化 mem1" / "iterate on mem1 until target"
+
+Then:
+
+1. **Use the Skill** at `.cursor/skills/mem1-auto-optimize/SKILL.md`: follow its workflow (build mem1-server → start → eval → collect → compare to baseline → modify server code if needed → stop → repeat until target or max rounds).
+2. **Baseline:** Use `evaluation/baselines/mem0_locomo.json` to decide if the target is met (e.g. overall.llm_score ≥ baseline).
+3. You have full control of the workspace: build, start, and stop mem1-server yourself; do not assume the server is already running.

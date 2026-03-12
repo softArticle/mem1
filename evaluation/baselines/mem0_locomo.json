@@ -1,0 +1,14 @@
+{
+  "_comment": "mem0 LOCOMO baseline; primary target: llm_score. BLEU/F1 to be filled from mem0 paper/results if needed.",
+  "overall": {
+    "llm_score": 0.8487,
+    "bleu_score": null,
+    "f1_score": null
+  },
+  "by_category": [
+    { "category": "1", "type": "multi_hop", "llm_score": 0.805, "bleu_score": null, "f1_score": null },
+    { "category": "2", "type": "temporal", "llm_score": 0.726, "bleu_score": null, "f1_score": null },
+    { "category": "3", "type": "open_domain", "llm_score": 0.646, "bleu_score": null, "f1_score": null },
+    { "category": "4", "type": "single_hop", "llm_score": 0.933, "bleu_score": null, "f1_score": null }
+  ]
+}

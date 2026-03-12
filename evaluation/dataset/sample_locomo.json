@@ -1,0 +1,21 @@
+[
+  {
+    "conversation": {
+      "speaker_a": "Alice",
+      "speaker_b": "Bob",
+      "chat_1": [
+        {"speaker": "Alice", "text": "I prefer dark mode and use Python for ML."},
+        {"speaker": "Bob", "text": "I use Rust for servers."}
+      ],
+      "chat_1_date_time": "2024-01-15T10:00:00Z"
+    },
+    "qa": [
+      {
+        "question": "What does Alice prefer?",
+        "answer": "dark mode",
+        "category": "1",
+        "evidence": []
+      }
+    ]
+  }
+]
