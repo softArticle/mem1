@@ -123,7 +123,16 @@ fn rrf_merge(
         memories.entry(id).or_insert(mem);
     }
     let mut out: Vec<(String, f32)> = scores.into_iter().collect();
-    out.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        let by_score = b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal);
+        if by_score != std::cmp::Ordering::Equal {
+            return by_score;
+        }
+        // Tie-break: prefer newer memories (helps temporal recency)
+        let ca = memories.get(&a.0).map(|m| m.created_at.as_str()).unwrap_or("");
+        let cb = memories.get(&b.0).map(|m| m.created_at.as_str()).unwrap_or("");
+        cb.cmp(ca)
+    });
     out.into_iter()
         .take(limit as usize)
         .filter_map(|(id, score)| {
