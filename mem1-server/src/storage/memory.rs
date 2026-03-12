@@ -329,9 +329,16 @@ impl MemoryStore for SurrealMemoryStore {
                 SurrealMemoryStore::search_vector_raw(&db, &user_id, qvec, fetch_limit);
 
             let (kw_list, vec_list) = tokio::join!(kw_fut, vec_fut);
-            let kw_list = kw_list?;
+            let mut kw_list = kw_list?;
             let vec_list = vec_list?;
-
+            if kw_list.is_empty() {
+                let fallback = significant_terms(&query);
+                if !fallback.is_empty() {
+                    kw_list =
+                        SurrealMemoryStore::search_keyword_raw(&db, &user_id, &fallback, fetch_limit)
+                            .await?;
+                }
+            }
             return Ok(rrf_merge(kw_list, vec_list, limit));
         }
 
