@@ -22,6 +22,37 @@ description: Run the mem1-server optimization loop until metrics match mem0 base
 - Paths exist: `mem1-server/`, `evaluation/`, and `evaluation/baselines/mem0_locomo.json`.
 - No need for the user to start the server; you build and start it each round.
 
+## Step 0. Airdrop 空投（仅当用户提供新方案时执行）
+
+若用户在本轮调用中提供了 **新方案引用**（GitHub 仓库或论文 URL/路径），先执行本步；否则跳过，直接从下面的 One-round steps 的 Step 1 开始。
+
+1. **解析引用**  
+   从本次调用的用户输入中识别「新方案」：GitHub 仓库 URL（如 `https://github.com/org/repo` 或 `org/repo`）、论文 URL（如 arxiv、PDF 链接）或本地文件路径（如 `./papers/xxx.pdf`）。若未提供，跳过整节，从 Step 1（Build）开始。
+
+2. **还原点**  
+   执行 `git add -A && git commit -m "pre-airdrop"`（若无变更可跳过），以便空投引入错误时可回退。
+
+3. **拉取**  
+   - **GitHub**：浅克隆或下载 archive（如 `git clone --depth 1 <url>` 或 `curl -L` 下载 archive.zip），得到本地目录。  
+   - **论文**：通过 URL 拉取正文/摘要或读取本地 PDF；若仅能拿到摘要，以摘要+标题为主进行分析。
+
+4. **分析设计**  
+   - **仓库**：阅读 README、文档、核心代码（语言不限），提取与 **记忆存储、检索、embedding、记忆模型** 相关的设计（算法、数据结构、配置）。  
+   - **论文**：提取方法描述、公式、流程，映射到「存储/检索/embedding」中的可实现点。
+
+5. **引入到 mem1-server（仅服务端）**  
+   - 将上述设计 **迁移/改写** 到 mem1-server 的 Rust 实现中；**不修改 evaluation**。  
+   - 可涉及：`mem1-server/src/storage/memory.rs`（检索、RRF、keyword/vector 策略）、`mem1-server/src/memory/model.rs`、`embedding.rs`、`local_embed.rs`（模型与嵌入），以及其他 mem1-server 内与存储/检索/embed 相关的模块。  
+   - 保持现有 HTTP API（add/search/get/delete）不变；仅改内部实现与数据结构。
+
+6. **提交**  
+   `git add -A && git commit -m "airdrop: <简短描述> from <ref>"`。
+
+7. **继续**  
+   从下面的 **One-round steps** 的 Step 1（Build）开始执行，后续与当前流程一致（build → start → eval → collect → compare；未达标则 commit 还原点 → 改代码 → re-eval → assess）。
+
+**异常**：引用不可达（私有仓库、死链、无权限）时，在报告中说明并跳过空投，直接进入 Step 1。无法从论文/仓库提取到可实施设计时，同样说明后跳过空投。
+
 ## One-round steps
 
 Execute in order each iteration. Keep **metrics from previous run** (or baseline) as **M_prev** for the assessment step.
