@@ -14,6 +14,11 @@ description: Run the mem1-server optimization loop until metrics match mem0 base
 
 - **You must fix any blocking issue yourself.** If the server fails to start (e.g. panic, missing embed, DB lock), fix the code (e.g. embed download in a thread, clear stale lock, use a different data dir) and retry. If build fails, fix the code. If eval fails (e.g. connection refused, script error), fix the environment or server and re-run. Do **not** ask the user "should I fix X?" or "use sample or full?" — decide and act.
 - **Optimization direction is yours.** When metrics are below baseline, decide what to change (retrieval, embedding, search, storage) and apply the code changes; do not ask the user to choose.
+
+## 现阶段优化范围（避免死循环）
+
+- **只优化空投方案，不做参数调节。** 修改代码时只针对**已空投的设计**做优化（例如 Zep 的图上下文：`related_ids`、`expand_with_related`、图结构/组装/排序、metadata 用法等）。**禁止**调节以下参数或等价逻辑：`RRF_K`、`RRF_KEYWORD_WEIGHT`、`fetch_limit_for_rrf`、`significant_terms` 的 term 数量/截断、以及其它与 RRF/检索分支无关的常数。若本轮没有空投，则只允许对现有「图/上下文/空投相关」逻辑做增强或重构，不得改上述参数。
+- 原因：参数调节容易在多轮中反复回退、形成死循环；先阶段专注空投方案的改进，待稳定后再考虑参数。
 - **The user only gets the result:** at the end, output whether the target was met, total rounds, and final scores. No intermediate "what should I do?" — only final report (or a short per-round summary and then the final report).
 
 ## Prerequisites
@@ -83,7 +88,7 @@ Execute in order each iteration. Keep **metrics from previous run** (or baseline
 8. **If not passed — optimization and assessment (评估环节)**  
    - **Stop** mem1-server.
    - **Create restore point (必须，否则无法可靠回退):** 在修改任何 mem1-server 代码之前，先提交当前工作区，以便之后可以回退。执行：`git add -A && git commit -m "pre-optimization round N"`（N 为当前轮次）。若当前无变更可提交（working tree clean），可跳过本步，但若上一轮或本轮之前已做过一次「改代码前的提交」，则回退时用该提交即可。
-   - Decide **optimization direction** from the gaps. **Edit mem1-server code** (apply one or a small set of changes).
+   - Decide **optimization direction** from the gaps. **Edit mem1-server code** (apply one or a small set of changes). 修改须符合「现阶段优化范围」：仅空投方案相关，不调 RRF/ fetch_limit / significant_terms 等参数。
      - **Re-eval:** Rebuild, start server again, run evaluation again (same choice as step 4: medium or full), then **collect new metrics** → call this **M_new**.
    - **Assessment (评估):** Compare **M_new** vs **M_prev** (previous round’s metrics, or M_current from before this round’s change). Use a single primary metric for “improvement”, e.g. `overall.llm_score`.
      - **If M_new shows improvement** (e.g. `M_new.overall.llm_score` > `M_prev.overall.llm_score`): Treat the change as good. Stop server. Set M_prev = M_new. Go back to step 1 for the **next round** (or re-check baseline; if now passed, end).

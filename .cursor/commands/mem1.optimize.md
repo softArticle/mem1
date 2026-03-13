@@ -16,6 +16,8 @@ Consider user input if not empty (e.g. max rounds, custom baseline path).
 
 2. Execute the full workflow: build → start → eval → collect → compare; if not met, **commit** (restore point), **change code**, then **re-eval** → **assess** (revert or strengthen as needed). When max_rounds is large (e.g. 50), use **make medium** per round (first 2 convs, ~300 QAs) so metrics are stable and iterations finish in feasible time; optionally run **make full** once at the end for final score.
 
+   **现阶段优化范围限制：** 只做**空投方案的优化**（例如 Zep 图上下文、related_ids 扩展、图结构/组装逻辑等），**不要做参数调节**（如 RRF_K、RRF_KEYWORD_WEIGHT、fetch_limit、significant_terms 等），避免在参数上陷入死循环。
+
 3. **Baseline:** Use `evaluation/baselines/mem0_locomo.json` as the target. Pass criterion (initial version): current run’s **overall.llm_score** ≥ baseline **overall.llm_score**.
 
 4. **Optional from $ARGUMENTS:** Parse user input for: (a) **max rounds** — a number (e.g. `5`, `20 轮`) means stop after that many rounds even if target not met; (b) **baseline path** — if the user provides a file path to a baseline JSON, use it instead of the default; (c) **新方案引用** — a GitHub repo URL (e.g. `https://github.com/org/repo` or `org/repo`), paper URL (e.g. arxiv, PDF link), or local path (e.g. `./papers/xxx.pdf`). When present, the reference triggers **Step 0. Airdrop** before the loop; the number (if any) is max_rounds. User can supply both, e.g. `20 轮 https://github.com/mem0ai/mem0`.
