@@ -9,6 +9,32 @@ use axum::Json;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Build Zep/Graphiti-style context string: FACTS (with date range) + ENTITIES (id: content).
+/// Paper: "For each e_i, χ returns the fact and t_valid, t_invalid; for each n_i, name and summary."
+fn build_formatted_context(memories: &[(Memory, Option<f32>)]) -> String {
+    if memories.is_empty() {
+        return String::new();
+    }
+    let mut facts = Vec::with_capacity(memories.len());
+    let mut entities = Vec::with_capacity(memories.len());
+    for (m, _) in memories {
+        let valid = m.metadata.get("valid_at").and_then(|v| v.as_str()).unwrap_or(&m.created_at);
+        let invalid = m.metadata.get("invalid_at").and_then(|v| v.as_str()).unwrap_or("");
+        let range = if invalid.is_empty() {
+            format!("Date: {}", valid)
+        } else {
+            format!("Date range: {} - {}", valid, invalid)
+        };
+        facts.push(format!("{} ({})", m.content.trim(), range));
+        entities.push(format!("{}: {}", m.id, m.content.trim()));
+    }
+    format!(
+        "FACTS and ENTITIES represent relevant context (Zep/Graphiti-style).\nformat: FACT (Date range: from - to)\n<FACTS>\n{}\n</FACTS>\nThese are the most relevant entities.\n<ENTITIES>\n{}\n</ENTITIES>",
+        facts.join("\n"),
+        entities.join("\n")
+    )
+}
+
 #[derive(serde::Deserialize)]
 pub struct UserScopeQuery {
     pub user_id: String,
@@ -77,6 +103,7 @@ pub async fn search_memories(
         .store
         .search(&req.user_id, &req.query, query_vec, req.limit)
         .await?;
+    let formatted_context = Some(build_formatted_context(&rows));
     let results = rows
         .into_iter()
         .map(|(m, score)| MemoryResult {
@@ -89,7 +116,10 @@ pub async fn search_memories(
         })
         .collect();
 
-    Ok(Json(SearchResponse { results }))
+    Ok(Json(SearchResponse {
+        results,
+        formatted_context,
+    }))
 }
 
 pub async fn get_memory(

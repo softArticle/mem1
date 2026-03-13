@@ -54,5 +54,8 @@ pub struct AddResponse {
 #[derive(Debug, Serialize)]
 pub struct SearchResponse {
     pub results: Vec<MemoryResult>,
+    /// Zep/Graphiti-style assembled context (FACTS with date ranges + ENTITIES). Optional for backward compatibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formatted_context: Option<String>,
 }
 
