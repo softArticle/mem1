@@ -38,9 +38,10 @@ fn is_valid_at(mem: &Memory, now: &DateTime<Utc>) -> bool {
 }
 
 /// RRF constant (reciprocal rank fusion). score = 1/(k + rank).
+/// mem0 LOCOMO eval uses top_k=30 (we use same limit from client); mem0 has no RRF (vector + optional reranker).
 const RRF_K: u32 = 60;
-/// Extra weight for keyword path in RRF (improves when answer is keyword-matched).
-const RRF_KEYWORD_WEIGHT: f32 = 1.2;
+/// Extra weight for keyword path in RRF. 1.0 = equal weight with vector (align with mem0 not emphasizing keyword).
+const RRF_KEYWORD_WEIGHT: f32 = 1.0;
 
 /// Build a shorter keyword query from the longest 2 terms (len >= 2), so FTS AND-semantics
 /// can match when the full query has stopwords like "what does" that are not in the document.
