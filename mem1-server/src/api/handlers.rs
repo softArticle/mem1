@@ -1,4 +1,6 @@
-use crate::api::dto::{AddMemoryRequest, AddResponse, MemoryResult, SearchRequest, SearchResponse};
+use crate::api::dto::{
+    AddMemoryRequest, AddResponse, ListMemoriesQuery, MemoryResult, SearchRequest, SearchResponse,
+};
 use crate::app_state::AppState;
 use crate::error::Error;
 use crate::memory::model::Memory;
@@ -18,8 +20,16 @@ fn build_formatted_context(memories: &[(Memory, Option<f32>)]) -> String {
     let mut facts = Vec::with_capacity(memories.len());
     let mut entities = Vec::with_capacity(memories.len());
     for (m, _) in memories {
-        let valid = m.metadata.get("valid_at").and_then(|v| v.as_str()).unwrap_or(&m.created_at);
-        let invalid = m.metadata.get("invalid_at").and_then(|v| v.as_str()).unwrap_or("");
+        let valid = m
+            .metadata
+            .get("valid_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&m.created_at);
+        let invalid = m
+            .metadata
+            .get("invalid_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let range = if invalid.is_empty() {
             format!("Date: {}", valid)
         } else {
@@ -38,6 +48,17 @@ fn build_formatted_context(memories: &[(Memory, Option<f32>)]) -> String {
 #[derive(serde::Deserialize)]
 pub struct UserScopeQuery {
     pub user_id: String,
+}
+
+fn normalize_filter(value: Option<String>) -> Option<String> {
+    value.and_then(|s| {
+        let s = s.trim();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s.to_string())
+        }
+    })
 }
 
 pub async fn add_memory(
@@ -99,9 +120,18 @@ pub async fn search_memories(
     }
 
     let query_vec = state.embedder.embed_text(&req.query).await?;
+    let scope = normalize_filter(req.scope);
+    let memory_type = normalize_filter(req.memory_type);
     let rows = state
         .store
-        .search(&req.user_id, &req.query, query_vec, req.limit)
+        .search(
+            &req.user_id,
+            &req.query,
+            query_vec,
+            req.limit,
+            scope.as_deref(),
+            memory_type.as_deref(),
+        )
         .await?;
     let formatted_context = Some(build_formatted_context(&rows));
     let results = rows
@@ -120,6 +150,41 @@ pub async fn search_memories(
         results,
         formatted_context,
     }))
+}
+
+pub async fn list_memories(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<ListMemoriesQuery>,
+) -> Result<Json<AddResponse>, Error> {
+    if q.user_id.trim().is_empty() {
+        return Err(Error::InvalidInput("user_id is required".to_string()));
+    }
+
+    let scope = normalize_filter(q.scope);
+    let memory_type = normalize_filter(q.memory_type);
+    let rows = state
+        .store
+        .list_by_user(
+            &q.user_id,
+            q.limit,
+            q.offset,
+            scope.as_deref(),
+            memory_type.as_deref(),
+        )
+        .await?;
+    let results = rows
+        .into_iter()
+        .map(|m| MemoryResult {
+            id: m.id,
+            content: m.content,
+            user_id: m.user_id,
+            metadata: m.metadata,
+            created_at: m.created_at,
+            score: None,
+        })
+        .collect();
+
+    Ok(Json(AddResponse { results }))
 }
 
 pub async fn get_memory(
@@ -157,4 +222,3 @@ pub async fn delete_memory(
     }
     Ok(StatusCode::NO_CONTENT)
 }
-

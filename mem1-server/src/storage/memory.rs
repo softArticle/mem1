@@ -37,6 +37,25 @@ fn is_valid_at(mem: &Memory, now: &DateTime<Utc>) -> bool {
     true
 }
 
+fn metadata_matches(mem: &Memory, scope: Option<&str>, memory_type: Option<&str>) -> bool {
+    fn value_matches(
+        metadata: &HashMap<String, serde_json::Value>,
+        key: &str,
+        expected: Option<&str>,
+    ) -> bool {
+        let Some(expected) = expected else {
+            return true;
+        };
+        metadata
+            .get(key)
+            .and_then(|v| v.as_str())
+            .is_some_and(|actual| actual == expected)
+    }
+
+    value_matches(&mem.metadata, "scope", scope)
+        && value_matches(&mem.metadata, "memory_type", memory_type)
+}
+
 /// RRF constant (reciprocal rank fusion). score = 1/(k + rank).
 /// mem0 LOCOMO eval uses top_k=30 (we use same limit from client); mem0 has no RRF (vector + optional reranker).
 const RRF_K: u32 = 60;
@@ -67,7 +86,17 @@ pub trait MemoryStore: Send + Sync {
         query: &str,
         query_embedding: Option<Vec<f32>>,
         limit: u32,
+        scope: Option<&str>,
+        memory_type: Option<&str>,
     ) -> Result<Vec<(Memory, Option<f32>)>, Error>;
+    async fn list_by_user(
+        &self,
+        user_id: &str,
+        limit: u32,
+        offset: u32,
+        scope: Option<&str>,
+        memory_type: Option<&str>,
+    ) -> Result<Vec<Memory>, Error>;
 }
 
 /// SurrealDB-backed memory store (embedded).
@@ -159,15 +188,19 @@ fn rrf_merge(
             return by_score;
         }
         // Tie-break: prefer newer memories (helps temporal recency)
-        let ca = memories.get(&a.0).map(|m| m.created_at.as_str()).unwrap_or("");
-        let cb = memories.get(&b.0).map(|m| m.created_at.as_str()).unwrap_or("");
+        let ca = memories
+            .get(&a.0)
+            .map(|m| m.created_at.as_str())
+            .unwrap_or("");
+        let cb = memories
+            .get(&b.0)
+            .map(|m| m.created_at.as_str())
+            .unwrap_or("");
         cb.cmp(ca)
     });
     out.into_iter()
         .take(limit as usize)
-        .filter_map(|(id, score)| {
-            memories.remove(&id).map(|mem| (mem, Some(score)))
-        })
+        .filter_map(|(id, score)| memories.remove(&id).map(|mem| (mem, Some(score))))
         .collect()
 }
 
@@ -288,6 +321,9 @@ impl SurrealMemoryStore {
         user_id: &str,
         mut items: Vec<(Memory, Option<f32>)>,
         limit: u32,
+        now: &DateTime<Utc>,
+        scope: Option<&str>,
+        memory_type: Option<&str>,
     ) -> Result<Vec<(Memory, Option<f32>)>, Error> {
         let cap = limit as usize;
         if items.len() >= cap {
@@ -314,7 +350,9 @@ impl SurrealMemoryStore {
                 break;
             }
             if let Ok(Some(mem)) = self.get(id.as_str(), user_id).await {
-                items.push((mem, None));
+                if is_valid_at(&mem, now) && metadata_matches(&mem, scope, memory_type) {
+                    items.push((mem, None));
+                }
             }
         }
         Ok(items)
@@ -326,14 +364,15 @@ impl MemoryStore for SurrealMemoryStore {
     async fn add(&self, memory: &Memory) -> Result<Memory, Error> {
         let id = Self::id_trim(&memory.id)?;
         let record = Self::to_record(memory);
-        let created: Option<MemoryRecord> = self
-            .0
-            .create(("memories", id))
-            .content(record)
-            .await
-            .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb create: {e}")))?;
-        let created = created
-            .ok_or_else(|| Error::Storage(anyhow::anyhow!("surrealdb create: no record returned")))?;
+        let created: Option<MemoryRecord> =
+            self.0
+                .create(("memories", id))
+                .content(record)
+                .await
+                .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb create: {e}")))?;
+        let created = created.ok_or_else(|| {
+            Error::Storage(anyhow::anyhow!("surrealdb create: no record returned"))
+        })?;
         let out_id = record_id_to_string(&created.id, id);
         Ok(Self::from_record(out_id, created))
     }
@@ -382,6 +421,8 @@ impl MemoryStore for SurrealMemoryStore {
         query: &str,
         query_embedding: Option<Vec<f32>>,
         limit: u32,
+        scope: Option<&str>,
+        memory_type: Option<&str>,
     ) -> Result<Vec<(Memory, Option<f32>)>, Error> {
         let limit = limit.min(100);
 
@@ -393,8 +434,7 @@ impl MemoryStore for SurrealMemoryStore {
             let fetch_limit = fetch_limit_for_rrf(limit);
 
             let kw_fut = SurrealMemoryStore::search_keyword_raw(&db, &user_id, &query, fetch_limit);
-            let vec_fut =
-                SurrealMemoryStore::search_vector_raw(&db, &user_id, qvec, fetch_limit);
+            let vec_fut = SurrealMemoryStore::search_vector_raw(&db, &user_id, qvec, fetch_limit);
 
             let (kw_list, vec_list) = tokio::join!(kw_fut, vec_fut);
             let mut kw_list = kw_list?;
@@ -402,19 +442,25 @@ impl MemoryStore for SurrealMemoryStore {
             if kw_list.is_empty() {
                 let fallback = significant_terms(&query);
                 if !fallback.is_empty() {
-                    kw_list =
-                        SurrealMemoryStore::search_keyword_raw(&db, &user_id, &fallback, fetch_limit)
-                            .await?;
+                    kw_list = SurrealMemoryStore::search_keyword_raw(
+                        &db,
+                        &user_id,
+                        &fallback,
+                        fetch_limit,
+                    )
+                    .await?;
                 }
             }
             let merged = rrf_merge(kw_list, vec_list, limit);
             let now = Utc::now();
             let filtered: Vec<_> = merged
                 .into_iter()
-                .filter(|(m, _)| is_valid_at(m, &now))
+                .filter(|(m, _)| is_valid_at(m, &now) && metadata_matches(m, scope, memory_type))
                 .take(limit as usize)
                 .collect();
-            return self.expand_with_related(&user_id, filtered, limit).await;
+            return self
+                .expand_with_related(&user_id, filtered, limit, &now, scope, memory_type)
+                .await;
         }
 
         // No embedding: keyword-only (FULLTEXT + search::score).
@@ -427,18 +473,90 @@ impl MemoryStore for SurrealMemoryStore {
         if kw_list.is_empty() {
             let fallback = significant_terms(query);
             if fallback != query && !fallback.is_empty() {
-                kw_list =
-                    SurrealMemoryStore::search_keyword_raw(&self.0, user_id, &fallback, fetch_limit)
-                        .await?;
+                kw_list = SurrealMemoryStore::search_keyword_raw(
+                    &self.0,
+                    user_id,
+                    &fallback,
+                    fetch_limit,
+                )
+                .await?;
             }
         }
         let now = Utc::now();
         let list: Vec<_> = kw_list
             .into_iter()
             .map(|(_, mem)| (mem, None))
-            .filter(|(m, _)| is_valid_at(m, &now))
+            .filter(|(m, _)| is_valid_at(m, &now) && metadata_matches(m, scope, memory_type))
             .take(limit as usize)
             .collect();
-        self.expand_with_related(user_id, list, limit).await
+        self.expand_with_related(user_id, list, limit, &now, scope, memory_type)
+            .await
+    }
+
+    async fn list_by_user(
+        &self,
+        user_id: &str,
+        limit: u32,
+        offset: u32,
+        scope: Option<&str>,
+        memory_type: Option<&str>,
+    ) -> Result<Vec<Memory>, Error> {
+        let limit = limit.min(100);
+        let sql = "SELECT * FROM memories WHERE user_id = $user_id ORDER BY created_at DESC";
+        let mut response = self
+            .0
+            .query(sql)
+            .bind(("user_id", user_id.to_string()))
+            .await
+            .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb list query: {e}")))?;
+        let rows: Vec<SearchRow> = response
+            .take(0)
+            .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb take: {e}")))?;
+        let now = Utc::now();
+        Ok(rows
+            .into_iter()
+            .map(Self::search_row_to_memory)
+            .map(|(_, mem)| mem)
+            .filter(|m| is_valid_at(m, &now) && metadata_matches(m, scope, memory_type))
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::metadata_matches;
+    use crate::memory::model::Memory;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn memory_with_metadata(metadata: HashMap<String, serde_json::Value>) -> Memory {
+        Memory::new("content".to_string(), "u1".to_string(), metadata)
+    }
+
+    #[test]
+    fn metadata_matches_scope_and_memory_type_when_filters_are_present() {
+        let mut metadata = HashMap::new();
+        metadata.insert("scope".to_string(), json!("project"));
+        metadata.insert("memory_type".to_string(), json!("decision"));
+        let memory = memory_with_metadata(metadata);
+
+        assert!(metadata_matches(&memory, Some("project"), Some("decision")));
+        assert!(!metadata_matches(
+            &memory,
+            Some("session"),
+            Some("decision")
+        ));
+        assert!(!metadata_matches(&memory, Some("project"), Some("fact")));
+    }
+
+    #[test]
+    fn metadata_matches_allows_absent_filters() {
+        let memory = memory_with_metadata(HashMap::new());
+
+        assert!(metadata_matches(&memory, None, None));
+        assert!(!metadata_matches(&memory, Some("project"), None));
+        assert!(!metadata_matches(&memory, None, Some("fact")));
     }
 }

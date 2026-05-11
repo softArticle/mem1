@@ -18,8 +18,7 @@ async fn main() -> anyhow::Result<()> {
     let bind = std::env::var("MEM1_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let addr: SocketAddr = bind.parse()?;
 
-    let db_path =
-        std::env::var("MEM1_DB_PATH").unwrap_or_else(|_| "mem1.db".to_string());
+    let db_path = std::env::var("MEM1_DB_PATH").unwrap_or_else(|_| "mem1.db".to_string());
     let db = storage::connect(&db_path).await?;
     storage::ensure_schema(&db).await?;
     let store = storage::store(db);
@@ -28,8 +27,14 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .route("/memories", axum::routing::post(handlers::add_memory))
-        .route("/memories/search", axum::routing::post(handlers::search_memories))
+        .route(
+            "/memories",
+            get(handlers::list_memories).post(handlers::add_memory),
+        )
+        .route(
+            "/memories/search",
+            axum::routing::post(handlers::search_memories),
+        )
         .route(
             "/memories/:id",
             get(handlers::get_memory).delete(handlers::delete_memory),
