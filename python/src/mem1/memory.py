@@ -3,7 +3,6 @@
 from typing import Any, Optional, Union
 
 from mem1.client import Mem1Client
-from mem1.models import AddResponse, SearchResponse
 
 
 class Memory:
@@ -11,6 +10,14 @@ class Memory:
 
     def __init__(self, base_url: str = "http://127.0.0.1:8080", api_key: Optional[str] = None):
         self._client = Mem1Client(base_url=base_url, api_key=api_key)
+
+    @staticmethod
+    def _merge_filters(filters: Optional[dict[str, Any]], kwargs: dict[str, Any]) -> dict[str, Any]:
+        merged = dict(filters or {})
+        for key, value in kwargs.items():
+            if value is not None:
+                merged[key] = value
+        return merged
 
     def add(
         self,
@@ -35,9 +42,51 @@ class Memory:
         query: str,
         user_id: str = "default_user",
         limit: int = 10,
+        filters: Optional[dict[str, Any]] = None,
         **kwargs: Any,
     ) -> dict:
-        resp = self._client.search(user_id=user_id, query=query, limit=limit)
+        resp = self._client.search(
+            user_id=user_id,
+            query=query,
+            limit=limit,
+            filters=self._merge_filters(filters, kwargs),
+        )
+        return resp.model_dump()
+
+    def get_all(
+        self,
+        user_id: str = "default_user",
+        limit: int = 10,
+        offset: int = 0,
+        filters: Optional[dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> dict:
+        resp = self._client.list(
+            user_id=user_id,
+            limit=limit,
+            offset=offset,
+            filters=self._merge_filters(filters, kwargs),
+        )
+        return resp.model_dump()
+
+    def update(
+        self,
+        memory_id: str,
+        data: Optional[str] = None,
+        user_id: str = "default_user",
+        metadata: Optional[dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> dict:
+        merged_metadata = metadata
+        if kwargs:
+            merged_metadata = dict(metadata or {})
+            merged_metadata.update(kwargs)
+        resp = self._client.update(
+            memory_id=memory_id,
+            user_id=user_id,
+            content=data,
+            metadata=merged_metadata,
+        )
         return resp.model_dump()
 
     def get(self, memory_id: str, user_id: str = "default_user") -> Optional[dict]:
@@ -46,3 +95,25 @@ class Memory:
 
     def delete(self, memory_id: str, user_id: str = "default_user") -> bool:
         return self._client.delete(memory_id=memory_id, user_id=user_id)
+
+    def delete_all(
+        self,
+        user_id: str = "default_user",
+        filters: Optional[dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> dict:
+        resp = self._client.delete_all(
+            user_id=user_id,
+            filters=self._merge_filters(filters, kwargs),
+        )
+        return resp.model_dump()
+
+    def history(self, memory_id: str, user_id: str = "default_user") -> dict:
+        resp = self._client.history(memory_id=memory_id, user_id=user_id)
+        return resp.model_dump()
+
+    def users(self) -> dict:
+        return self._client.users().model_dump()
+
+    def reset(self) -> dict:
+        return self._client.reset().model_dump()

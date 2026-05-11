@@ -1,6 +1,6 @@
 //! Binary entrypoint: axum HTTP server (T013).
 
-use axum::{routing::get, Router};
+use axum::{routing::get, routing::post, Router};
 use mem1_server::api::{handlers, middleware};
 use mem1_server::app_state::AppState;
 use mem1_server::memory::embedding::Embedder;
@@ -29,7 +29,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/healthz", get(|| async { "ok" }))
         .route(
             "/memories",
-            get(handlers::list_memories).post(handlers::add_memory),
+            get(handlers::list_memories)
+                .post(handlers::add_memory)
+                .delete(handlers::delete_all_memories),
         )
         .route(
             "/memories/search",
@@ -37,8 +39,13 @@ async fn main() -> anyhow::Result<()> {
         )
         .route(
             "/memories/:id",
-            get(handlers::get_memory).delete(handlers::delete_memory),
+            get(handlers::get_memory)
+                .patch(handlers::update_memory)
+                .delete(handlers::delete_memory),
         )
+        .route("/memories/:id/history", get(handlers::memory_history))
+        .route("/users", get(handlers::list_users))
+        .route("/reset", post(handlers::reset_memories))
         .with_state(state)
         .layer(axum::middleware::from_fn(middleware::trace_layer));
 

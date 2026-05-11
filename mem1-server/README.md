@@ -17,3 +17,16 @@ Local AI memory service (Rust). HTTP API for adding, searching, getting, and del
 Optional for local: `MEM1_LOCAL_EMBED_MAX_LENGTH` (default 256).
 
 Local embedding uses **tract** (pure Rust ONNX inference); no native libs, so it builds and runs on macOS, Linux, and Windows without extra setup.
+
+## Basic memory API
+
+- `POST /memories` - add a memory.
+- `POST /memories/search` - search memories. Accepts legacy `user_id` plus mem0-style `filters.user_id`; string filters such as `scope`, `memory_type`, `agent_id`, and `run_id` are matched against metadata.
+- `GET /memories` - list memories for a user with `limit`, `offset`, and metadata filters.
+- `GET /memories/:id` - get one memory.
+- `PATCH /memories/:id` - update memory content and/or metadata.
+- `DELETE /memories/:id` - delete one memory.
+- `DELETE /memories` - delete all memories for a user, optionally narrowed by metadata filters.
+- `GET /memories/:id/history` - return add/update/delete history for one memory.
+- `GET /users` - list user IDs with stored memories.
+- `POST /reset` - clear all memories and history.

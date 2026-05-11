@@ -24,7 +24,8 @@ pub enum AddMemoryRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct SearchRequest {
-    pub user_id: String,
+    #[serde(default)]
+    pub user_id: Option<String>,
     pub query: String,
     #[serde(default = "default_limit")]
     pub limit: u32,
@@ -32,6 +33,8 @@ pub struct SearchRequest {
     pub scope: Option<String>,
     #[serde(default)]
     pub memory_type: Option<String>,
+    #[serde(default)]
+    pub filters: HashMap<String, serde_json::Value>,
 }
 
 fn default_limit() -> u32 {
@@ -49,6 +52,19 @@ pub struct ListMemoriesQuery {
     pub scope: Option<String>,
     #[serde(default)]
     pub memory_type: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateMemoryRequest {
+    pub user_id: String,
+    #[serde(default, alias = "data")]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub metadata: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -76,6 +92,34 @@ pub struct SearchResponse {
     pub formatted_context: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct DeleteAllResponse {
+    pub deleted: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UsersResponse {
+    pub users: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MemoryHistoryResult {
+    pub id: String,
+    pub memory_id: String,
+    pub user_id: String,
+    pub operation: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<MemoryResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<MemoryResult>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HistoryResponse {
+    pub results: Vec<MemoryHistoryResult>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ListMemoriesQuery, SearchRequest};
@@ -86,11 +130,12 @@ mod tests {
         let req: SearchRequest =
             serde_json::from_value(json!({"user_id": "u1", "query": "alice"})).unwrap();
 
-        assert_eq!(req.user_id, "u1");
+        assert_eq!(req.user_id.as_deref(), Some("u1"));
         assert_eq!(req.query, "alice");
         assert_eq!(req.limit, 10);
         assert_eq!(req.scope, None);
         assert_eq!(req.memory_type, None);
+        assert!(req.filters.is_empty());
     }
 
     #[test]
@@ -105,8 +150,36 @@ mod tests {
         .unwrap();
 
         assert_eq!(req.limit, 3);
+        assert_eq!(req.user_id.as_deref(), Some("u1"));
         assert_eq!(req.scope.as_deref(), Some("project"));
         assert_eq!(req.memory_type.as_deref(), Some("decision"));
+    }
+
+    #[test]
+    fn search_request_accepts_mem0_style_filters() {
+        let req: SearchRequest = serde_json::from_value(json!({
+            "query": "alice",
+            "filters": {
+                "user_id": "u1",
+                "agent_id": "agent-a",
+                "run_id": "run-1"
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(req.user_id, None);
+        assert_eq!(
+            req.filters.get("user_id").and_then(|v| v.as_str()),
+            Some("u1")
+        );
+        assert_eq!(
+            req.filters.get("agent_id").and_then(|v| v.as_str()),
+            Some("agent-a")
+        );
+        assert_eq!(
+            req.filters.get("run_id").and_then(|v| v.as_str()),
+            Some("run-1")
+        );
     }
 
     #[test]
@@ -125,5 +198,7 @@ mod tests {
         assert_eq!(q.offset, 50);
         assert_eq!(q.scope.as_deref(), Some("session"));
         assert_eq!(q.memory_type.as_deref(), Some("preference"));
+        assert_eq!(q.agent_id, None);
+        assert_eq!(q.run_id, None);
     }
 }

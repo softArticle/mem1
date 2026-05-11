@@ -7,8 +7,9 @@ use crate::memory::model::Memory;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use surrealdb::RecordId;
+use uuid::Uuid;
 
 use super::db::Db;
 
@@ -37,6 +38,7 @@ fn is_valid_at(mem: &Memory, now: &DateTime<Utc>) -> bool {
     true
 }
 
+#[cfg(test)]
 fn metadata_matches(mem: &Memory, scope: Option<&str>, memory_type: Option<&str>) -> bool {
     fn value_matches(
         metadata: &HashMap<String, serde_json::Value>,
@@ -54,6 +56,39 @@ fn metadata_matches(mem: &Memory, scope: Option<&str>, memory_type: Option<&str>
 
     value_matches(&mem.metadata, "scope", scope)
         && value_matches(&mem.metadata, "memory_type", memory_type)
+}
+
+/// Metadata filters shared by list/search/delete-all. `user_id` remains a first-class
+/// storage argument because reads and destructive operations are scoped by user.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MemoryFilters {
+    pub metadata: HashMap<String, String>,
+}
+
+impl MemoryFilters {
+    pub fn from_scope_type(scope: Option<&str>, memory_type: Option<&str>) -> Self {
+        let mut filters = Self::default();
+        if let Some(scope) = scope {
+            filters
+                .metadata
+                .insert("scope".to_string(), scope.to_string());
+        }
+        if let Some(memory_type) = memory_type {
+            filters
+                .metadata
+                .insert("memory_type".to_string(), memory_type.to_string());
+        }
+        filters
+    }
+
+    fn matches(&self, mem: &Memory) -> bool {
+        self.metadata.iter().all(|(key, expected)| {
+            mem.metadata
+                .get(key)
+                .and_then(|v| v.as_str())
+                .is_some_and(|actual| actual == expected)
+        })
+    }
 }
 
 /// RRF constant (reciprocal rank fusion). score = 1/(k + rank).
@@ -79,23 +114,32 @@ fn significant_terms(query: &str) -> String {
 pub trait MemoryStore: Send + Sync {
     async fn add(&self, memory: &Memory) -> Result<Memory, Error>;
     async fn get(&self, id: &str, user_id: &str) -> Result<Option<Memory>, Error>;
+    async fn update(
+        &self,
+        id: &str,
+        user_id: &str,
+        content: Option<String>,
+        metadata: Option<HashMap<String, serde_json::Value>>,
+    ) -> Result<Option<Memory>, Error>;
     async fn delete(&self, id: &str, user_id: &str) -> Result<bool, Error>;
+    async fn delete_all(&self, user_id: &str, filters: &MemoryFilters) -> Result<u64, Error>;
+    async fn history(&self, id: &str, user_id: &str) -> Result<Vec<MemoryHistory>, Error>;
+    async fn list_users(&self) -> Result<Vec<String>, Error>;
+    async fn reset(&self) -> Result<u64, Error>;
     async fn search(
         &self,
         user_id: &str,
         query: &str,
         query_embedding: Option<Vec<f32>>,
         limit: u32,
-        scope: Option<&str>,
-        memory_type: Option<&str>,
+        filters: &MemoryFilters,
     ) -> Result<Vec<(Memory, Option<f32>)>, Error>;
     async fn list_by_user(
         &self,
         user_id: &str,
         limit: u32,
         offset: u32,
-        scope: Option<&str>,
-        memory_type: Option<&str>,
+        filters: &MemoryFilters,
     ) -> Result<Vec<Memory>, Error>;
 }
 
@@ -104,6 +148,7 @@ pub struct SurrealMemoryStore(pub Db);
 
 #[derive(Serialize, Deserialize)]
 struct MemoryRecord {
+    #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<RecordId>,
     content: String,
     user_id: String,
@@ -124,6 +169,31 @@ struct SearchRow {
     updated_at: String,
     #[allow(dead_code)]
     score: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MemoryHistory {
+    pub id: String,
+    pub memory_id: String,
+    pub user_id: String,
+    pub operation: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<Memory>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<Memory>,
+    pub created_at: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct MemoryHistoryRecord {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<RecordId>,
+    memory_id: String,
+    user_id: String,
+    operation: String,
+    previous: Option<Memory>,
+    current: Option<Memory>,
+    created_at: String,
 }
 
 fn strip_backticks(s: &str) -> &str {
@@ -149,9 +219,8 @@ fn record_id_to_string(rid: &Option<RecordId>, fallback: &str) -> String {
         .map(|r| {
             let s = r.to_string();
             let s = strip_backticks(&s);
-            s.strip_prefix("memories:")
-                .map(String::from)
-                .unwrap_or_else(|| s.to_string())
+            let s = s.strip_prefix("memories:").unwrap_or(s);
+            strip_backticks(s).to_string()
         })
         .unwrap_or_else(|| fallback.to_string())
 }
@@ -206,7 +275,9 @@ fn rrf_merge(
 
 impl SurrealMemoryStore {
     fn id_trim(id: &str) -> Result<&str, Error> {
-        let id = strip_backticks(id).trim_start_matches("memories:");
+        let id = strip_backticks(id);
+        let id = id.strip_prefix("memories:").unwrap_or(id);
+        let id = strip_backticks(id);
         if id.is_empty() {
             return Err(Error::InvalidInput("id is required".to_string()));
         }
@@ -255,6 +326,94 @@ impl SurrealMemoryStore {
             updated_at: r.updated_at,
         };
         (id.clone(), Self::from_record(id, mem))
+    }
+
+    fn history_record_to_history(r: MemoryHistoryRecord) -> MemoryHistory {
+        let id =
+            r.id.as_ref()
+                .map(|rid| {
+                    let s = rid.to_string();
+                    let s = strip_backticks(&s);
+                    let s = s.strip_prefix("memory_history:").unwrap_or(s);
+                    strip_backticks(s).to_string()
+                })
+                .unwrap_or_default();
+        MemoryHistory {
+            id,
+            memory_id: r.memory_id,
+            user_id: r.user_id,
+            operation: r.operation,
+            previous: r.previous,
+            current: r.current,
+            created_at: r.created_at,
+        }
+    }
+
+    async fn record_history(
+        &self,
+        memory_id: &str,
+        user_id: &str,
+        operation: &str,
+        previous: Option<&Memory>,
+        current: Option<&Memory>,
+    ) -> Result<(), Error> {
+        let now = Utc::now().to_rfc3339();
+        let record = MemoryHistoryRecord {
+            id: None,
+            memory_id: memory_id.to_string(),
+            user_id: user_id.to_string(),
+            operation: operation.to_string(),
+            previous: previous.cloned(),
+            current: current.cloned(),
+            created_at: now,
+        };
+        let _: Option<MemoryHistoryRecord> = self
+            .0
+            .create(("memory_history", Uuid::new_v4().to_string()))
+            .content(record)
+            .await
+            .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb history create: {e}")))?;
+        Ok(())
+    }
+
+    async fn list_all_by_user(
+        &self,
+        user_id: &str,
+        filters: &MemoryFilters,
+    ) -> Result<Vec<Memory>, Error> {
+        let sql = "SELECT * FROM memories WHERE user_id = $user_id ORDER BY created_at DESC";
+        let mut response = self
+            .0
+            .query(sql)
+            .bind(("user_id", user_id.to_string()))
+            .await
+            .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb list query: {e}")))?;
+        let rows: Vec<SearchRow> = response
+            .take(0)
+            .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb take: {e}")))?;
+        let now = Utc::now();
+        Ok(rows
+            .into_iter()
+            .map(Self::search_row_to_memory)
+            .map(|(_, mem)| mem)
+            .filter(|m| is_valid_at(m, &now) && filters.matches(m))
+            .collect())
+    }
+
+    async fn list_all_memories(&self) -> Result<Vec<Memory>, Error> {
+        let mut response = self
+            .0
+            .query("SELECT * FROM memories")
+            .await
+            .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb list all query: {e}")))?;
+        let rows: Vec<SearchRow> = response
+            .take(0)
+            .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb take: {e}")))?;
+        Ok(rows
+            .into_iter()
+            .map(Self::search_row_to_memory)
+            .map(|(_, mem)| mem)
+            .collect())
     }
 
     /// Keyword path: FULLTEXT on content with search::score, ordered by score desc.
@@ -322,8 +481,7 @@ impl SurrealMemoryStore {
         mut items: Vec<(Memory, Option<f32>)>,
         limit: u32,
         now: &DateTime<Utc>,
-        scope: Option<&str>,
-        memory_type: Option<&str>,
+        filters: &MemoryFilters,
     ) -> Result<Vec<(Memory, Option<f32>)>, Error> {
         let cap = limit as usize;
         if items.len() >= cap {
@@ -350,7 +508,7 @@ impl SurrealMemoryStore {
                 break;
             }
             if let Ok(Some(mem)) = self.get(id.as_str(), user_id).await {
-                if is_valid_at(&mem, now) && metadata_matches(&mem, scope, memory_type) {
+                if is_valid_at(&mem, now) && filters.matches(&mem) {
                     items.push((mem, None));
                 }
             }
@@ -374,7 +532,10 @@ impl MemoryStore for SurrealMemoryStore {
             Error::Storage(anyhow::anyhow!("surrealdb create: no record returned"))
         })?;
         let out_id = record_id_to_string(&created.id, id);
-        Ok(Self::from_record(out_id, created))
+        let created = Self::from_record(out_id, created);
+        self.record_history(&created.id, &created.user_id, "ADD", None, Some(&created))
+            .await?;
+        Ok(created)
     }
 
     async fn get(&self, id: &str, user_id: &str) -> Result<Option<Memory>, Error> {
@@ -394,6 +555,71 @@ impl MemoryStore for SurrealMemoryStore {
         Ok(Some(Self::from_record(out_id, r)))
     }
 
+    async fn update(
+        &self,
+        id: &str,
+        user_id: &str,
+        content: Option<String>,
+        metadata: Option<HashMap<String, serde_json::Value>>,
+    ) -> Result<Option<Memory>, Error> {
+        let id_trim = Self::id_trim(id)?;
+        let opt: Option<MemoryRecord> = self
+            .0
+            .select(("memories", id_trim))
+            .await
+            .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb select: {e}")))?;
+        let Some(mut record) = opt else {
+            return Ok(None);
+        };
+        if record.user_id != user_id {
+            return Ok(None);
+        }
+
+        let previous_id = record_id_to_string(&record.id, id_trim);
+        let previous = Self::from_record(
+            previous_id.clone(),
+            MemoryRecord {
+                id: record.id.clone(),
+                content: record.content.clone(),
+                user_id: record.user_id.clone(),
+                embedding: record.embedding.clone(),
+                metadata: record.metadata.clone(),
+                created_at: record.created_at.clone(),
+                updated_at: record.updated_at.clone(),
+            },
+        );
+
+        if let Some(content) = content {
+            record.content = content;
+            record.embedding = None;
+        }
+        if let Some(metadata) = metadata {
+            record.metadata.extend(metadata);
+        }
+        record.updated_at = Utc::now().to_rfc3339();
+
+        let updated: Option<MemoryRecord> = self
+            .0
+            .update(("memories", id_trim))
+            .content(record)
+            .await
+            .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb update: {e}")))?;
+        let updated = updated.ok_or_else(|| {
+            Error::Storage(anyhow::anyhow!("surrealdb update: no record returned"))
+        })?;
+        let out_id = record_id_to_string(&updated.id, id_trim);
+        let updated = Self::from_record(out_id, updated);
+        self.record_history(
+            &updated.id,
+            &updated.user_id,
+            "UPDATE",
+            Some(&previous),
+            Some(&updated),
+        )
+        .await?;
+        Ok(Some(updated))
+    }
+
     async fn delete(&self, id: &str, user_id: &str) -> Result<bool, Error> {
         let id_trim = Self::id_trim(id)?;
         let opt: Option<MemoryRecord> = self
@@ -407,6 +633,16 @@ impl MemoryStore for SurrealMemoryStore {
         if r.user_id != user_id {
             return Ok(false);
         }
+        let out_id = record_id_to_string(&r.id, id_trim);
+        let deleted = Self::from_record(out_id, r);
+        self.record_history(
+            &deleted.id,
+            &deleted.user_id,
+            "DELETE",
+            Some(&deleted),
+            None,
+        )
+        .await?;
         let _: Option<MemoryRecord> = self
             .0
             .delete(("memories", id_trim))
@@ -415,14 +651,77 @@ impl MemoryStore for SurrealMemoryStore {
         Ok(true)
     }
 
+    async fn delete_all(&self, user_id: &str, filters: &MemoryFilters) -> Result<u64, Error> {
+        let memories = self.list_all_by_user(user_id, filters).await?;
+        let mut deleted = 0;
+        for memory in memories {
+            if self.delete(&memory.id, user_id).await? {
+                deleted += 1;
+            }
+        }
+        Ok(deleted)
+    }
+
+    async fn history(&self, id: &str, user_id: &str) -> Result<Vec<MemoryHistory>, Error> {
+        let id_trim = Self::id_trim(id)?;
+        let sql = "SELECT * FROM memory_history \
+                   WHERE memory_id = $memory_id AND user_id = $user_id \
+                   ORDER BY created_at ASC";
+        let mut response = self
+            .0
+            .query(sql)
+            .bind(("memory_id", id_trim.to_string()))
+            .bind(("user_id", user_id.to_string()))
+            .await
+            .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb history query: {e}")))?;
+        let rows: Vec<MemoryHistoryRecord> = response
+            .take(0)
+            .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb history take: {e}")))?;
+        Ok(rows
+            .into_iter()
+            .map(Self::history_record_to_history)
+            .collect())
+    }
+
+    async fn list_users(&self) -> Result<Vec<String>, Error> {
+        let users: BTreeSet<String> = self
+            .list_all_memories()
+            .await?
+            .into_iter()
+            .map(|m| m.user_id)
+            .collect();
+        Ok(users.into_iter().collect())
+    }
+
+    async fn reset(&self) -> Result<u64, Error> {
+        let memories = self.list_all_memories().await?;
+        let deleted = memories.len() as u64;
+        for memory in memories {
+            let id_trim = Self::id_trim(&memory.id)?;
+            let _: Option<MemoryRecord> = self
+                .0
+                .delete(("memories", id_trim))
+                .await
+                .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb reset delete: {e}")))?;
+        }
+        let mut response = self
+            .0
+            .query("DELETE memory_history")
+            .await
+            .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb reset history: {e}")))?;
+        let _: Vec<MemoryHistoryRecord> = response
+            .take(0)
+            .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb reset history take: {e}")))?;
+        Ok(deleted)
+    }
+
     async fn search(
         &self,
         user_id: &str,
         query: &str,
         query_embedding: Option<Vec<f32>>,
         limit: u32,
-        scope: Option<&str>,
-        memory_type: Option<&str>,
+        filters: &MemoryFilters,
     ) -> Result<Vec<(Memory, Option<f32>)>, Error> {
         let limit = limit.min(100);
 
@@ -455,11 +754,11 @@ impl MemoryStore for SurrealMemoryStore {
             let now = Utc::now();
             let filtered: Vec<_> = merged
                 .into_iter()
-                .filter(|(m, _)| is_valid_at(m, &now) && metadata_matches(m, scope, memory_type))
+                .filter(|(m, _)| is_valid_at(m, &now) && filters.matches(m))
                 .take(limit as usize)
                 .collect();
             return self
-                .expand_with_related(&user_id, filtered, limit, &now, scope, memory_type)
+                .expand_with_related(&user_id, filtered, limit, &now, filters)
                 .await;
         }
 
@@ -486,10 +785,10 @@ impl MemoryStore for SurrealMemoryStore {
         let list: Vec<_> = kw_list
             .into_iter()
             .map(|(_, mem)| (mem, None))
-            .filter(|(m, _)| is_valid_at(m, &now) && metadata_matches(m, scope, memory_type))
+            .filter(|(m, _)| is_valid_at(m, &now) && filters.matches(m))
             .take(limit as usize)
             .collect();
-        self.expand_with_related(user_id, list, limit, &now, scope, memory_type)
+        self.expand_with_related(user_id, list, limit, &now, filters)
             .await
     }
 
@@ -498,26 +797,13 @@ impl MemoryStore for SurrealMemoryStore {
         user_id: &str,
         limit: u32,
         offset: u32,
-        scope: Option<&str>,
-        memory_type: Option<&str>,
+        filters: &MemoryFilters,
     ) -> Result<Vec<Memory>, Error> {
         let limit = limit.min(100);
-        let sql = "SELECT * FROM memories WHERE user_id = $user_id ORDER BY created_at DESC";
-        let mut response = self
-            .0
-            .query(sql)
-            .bind(("user_id", user_id.to_string()))
-            .await
-            .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb list query: {e}")))?;
-        let rows: Vec<SearchRow> = response
-            .take(0)
-            .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb take: {e}")))?;
-        let now = Utc::now();
-        Ok(rows
+        Ok(self
+            .list_all_by_user(user_id, filters)
+            .await?
             .into_iter()
-            .map(Self::search_row_to_memory)
-            .map(|(_, mem)| mem)
-            .filter(|m| is_valid_at(m, &now) && metadata_matches(m, scope, memory_type))
             .skip(offset as usize)
             .take(limit as usize)
             .collect())

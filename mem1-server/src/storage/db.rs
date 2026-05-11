@@ -29,14 +29,15 @@ pub fn store(db: Db) -> SurrealMemoryStore {
 
 pub async fn ensure_schema(db: &Db) -> Result<(), Error> {
     // SurrealDB 2.x references the 'simple' analyzer on table create; define it if missing.
-    db.query(
-        "DEFINE ANALYZER IF NOT EXISTS simple TOKENIZERS blank, class FILTERS lowercase;",
-    )
-    .await
-    .map_err(|e| Error::Storage(anyhow::anyhow!("define analyzer: {e}")))?;
+    db.query("DEFINE ANALYZER IF NOT EXISTS simple TOKENIZERS blank, class FILTERS lowercase;")
+        .await
+        .map_err(|e| Error::Storage(anyhow::anyhow!("define analyzer: {e}")))?;
     db.query("DEFINE TABLE IF NOT EXISTS memories SCHEMALESS;")
         .await
         .map_err(|e| Error::Storage(anyhow::anyhow!("define table: {e}")))?;
+    db.query("DEFINE TABLE IF NOT EXISTS memory_history SCHEMALESS;")
+        .await
+        .map_err(|e| Error::Storage(anyhow::anyhow!("define history table: {e}")))?;
     // Full-text search on content for hybrid (keyword + vector) retrieval.
     db.query(
         "DEFINE INDEX IF NOT EXISTS memories_content_ft ON TABLE memories COLUMNS content SEARCH ANALYZER simple;",
