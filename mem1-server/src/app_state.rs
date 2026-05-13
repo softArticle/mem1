@@ -5,4 +5,3 @@ pub struct AppState {
     pub store: SurrealMemoryStore,
     pub embedder: Embedder,
 }
-

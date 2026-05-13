@@ -13,6 +13,8 @@ pub enum AddMemoryRequest {
     ByMessages {
         user_id: String,
         messages: Vec<Message>,
+        #[serde(default)]
+        metadata: HashMap<String, serde_json::Value>,
     },
     ByContent {
         user_id: String,
@@ -122,8 +124,64 @@ pub struct HistoryResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{ListMemoriesQuery, SearchRequest};
+    use super::{AddMemoryRequest, ListMemoriesQuery, SearchRequest};
     use serde_json::json;
+
+    #[test]
+    fn add_request_accepts_by_content_payload() {
+        let req: AddMemoryRequest = serde_json::from_value(json!({
+            "user_id": "u1",
+            "content": "Alice likes Rust.",
+            "metadata": {"scope": "profile"}
+        }))
+        .unwrap();
+
+        match req {
+            AddMemoryRequest::ByContent {
+                user_id,
+                content,
+                metadata,
+            } => {
+                assert_eq!(user_id, "u1");
+                assert_eq!(content, "Alice likes Rust.");
+                assert_eq!(
+                    metadata.get("scope").and_then(|v| v.as_str()),
+                    Some("profile")
+                );
+            }
+            AddMemoryRequest::ByMessages { .. } => panic!("expected by-content add request"),
+        }
+    }
+
+    #[test]
+    fn add_request_accepts_by_messages_payload_with_optional_metadata() {
+        let req: AddMemoryRequest = serde_json::from_value(json!({
+            "user_id": "u1",
+            "messages": [
+                {"role": "user", "content": "I prefer tea."}
+            ],
+            "metadata": {"agent_id": "agent-a"}
+        }))
+        .unwrap();
+
+        match req {
+            AddMemoryRequest::ByMessages {
+                user_id,
+                messages,
+                metadata,
+            } => {
+                assert_eq!(user_id, "u1");
+                assert_eq!(messages.len(), 1);
+                assert_eq!(messages[0].role, "user");
+                assert_eq!(messages[0].content, "I prefer tea.");
+                assert_eq!(
+                    metadata.get("agent_id").and_then(|v| v.as_str()),
+                    Some("agent-a")
+                );
+            }
+            AddMemoryRequest::ByContent { .. } => panic!("expected by-messages add request"),
+        }
+    }
 
     #[test]
     fn search_request_keeps_old_shape_and_defaults_filters() {

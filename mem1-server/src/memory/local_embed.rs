@@ -5,12 +5,12 @@ use crate::error::Error;
 use ndarray::Array1;
 use std::path::Path;
 use std::sync::Arc;
-use tract_onnx::prelude::*;
 use tokenizers::tokenizer::Tokenizer;
 use tokenizers::{
     pad_encodings, truncate_encodings, PaddingDirection, PaddingParams, PaddingStrategy,
     TruncationDirection, TruncationParams, TruncationStrategy,
 };
+use tract_onnx::prelude::*;
 
 const DEFAULT_MAX_LENGTH: usize = 256;
 const MODEL_FILENAME: &str = "model.onnx";
@@ -24,9 +24,12 @@ const ATTENTION_MASK_NAME: &str = "attention_mask";
 #[allow(dead_code)]
 const LAST_HIDDEN_STATE_NAME: &str = "last_hidden_state";
 
+type TractRunnable = RunnableModel<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
+type SharedRunnable = Arc<std::sync::Mutex<TractRunnable>>;
+
 pub struct LocalEmbedder {
     /// Runnable model; we run it under this mutex (tract runnable is not Sync by default in some setups).
-    model: Arc<std::sync::Mutex<RunnableModel<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>>>,
+    model: SharedRunnable,
     tokenizer: Tokenizer,
     max_length: usize,
     /// Number of model inputs (2 = input_ids, attention_mask; 3 = + token_type_ids). Some ONNX exports need 3.
@@ -151,7 +154,11 @@ impl LocalEmbedder {
 
         let encoding: &tokenizers::Encoding = &encodings[0];
         let ids: Vec<i64> = encoding.get_ids().iter().map(|&u| u as i64).collect();
-        let mask: Vec<i64> = encoding.get_attention_mask().iter().map(|&u| u as i64).collect();
+        let mask: Vec<i64> = encoding
+            .get_attention_mask()
+            .iter()
+            .map(|&u| u as i64)
+            .collect();
 
         let seq_len = ids.len();
 

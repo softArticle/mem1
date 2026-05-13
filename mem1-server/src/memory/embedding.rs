@@ -3,13 +3,13 @@ use rig::client::EmbeddingsClient;
 use rig::embeddings::EmbeddingsBuilder;
 
 #[cfg(feature = "local-embed")]
-use std::sync::Arc;
+use super::download;
 #[cfg(feature = "local-embed")]
 use super::local_embed::LocalEmbedder;
 #[cfg(feature = "local-embed")]
 use std::path::PathBuf;
 #[cfg(feature = "local-embed")]
-use super::download;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub enum Embedder {
@@ -50,11 +50,11 @@ impl Embedder {
                 #[cfg(feature = "local-embed")]
                 {
                     const DEFAULT_LOCAL_EMBED_MODEL_DIR: &str = "embed_model";
-                    let (model_dir, is_default) =
-                        match std::env::var("MEM1_LOCAL_EMBED_MODEL_DIR") {
-                            Ok(d) => (d, false),
-                            Err(_) => (DEFAULT_LOCAL_EMBED_MODEL_DIR.to_string(), true),
-                        };
+                    let (model_dir, is_default) = match std::env::var("MEM1_LOCAL_EMBED_MODEL_DIR")
+                    {
+                        Ok(d) => (d, false),
+                        Err(_) => (DEFAULT_LOCAL_EMBED_MODEL_DIR.to_string(), true),
+                    };
                     let path = PathBuf::from(&model_dir);
                     let max_length = std::env::var("MEM1_LOCAL_EMBED_MAX_LENGTH")
                         .ok()
@@ -80,9 +80,9 @@ impl Embedder {
                             match LocalEmbedder::load(&path, max_length) {
                                 Ok(inner) => {
                                     tracing::info!("default embed model loaded");
-                                    return Ok(Self::Local {
+                                    Ok(Self::Local {
                                         inner: Arc::new(inner),
-                                    });
+                                    })
                                 }
                                 Err(e2) => {
                                     tracing::warn!(
@@ -101,9 +101,9 @@ impl Embedder {
                                     match LocalEmbedder::load(&path, max_length) {
                                         Ok(inner) => {
                                             tracing::info!("alternative embed model loaded");
-                                            return Ok(Self::Local {
+                                            Ok(Self::Local {
                                                 inner: Arc::new(inner),
-                                            });
+                                            })
                                         }
                                         Err(e3) => {
                                             tracing::warn!(
@@ -111,7 +111,7 @@ impl Embedder {
                                                 error = %e3,
                                                 "load after alternative download failed, running without embedding"
                                             );
-                                            return Ok(Self::Off);
+                                            Ok(Self::Off)
                                         }
                                     }
                                 }
@@ -172,4 +172,3 @@ impl Embedder {
         }
     }
 }
-

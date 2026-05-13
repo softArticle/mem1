@@ -13,6 +13,52 @@ class FakeClient:
     def __init__(self):
         self.calls = []
 
+    def add(self, **kwargs):
+        self.calls.append(("add", kwargs))
+        return Dumpable(
+            {
+                "results": [
+                    {
+                        "id": "m1",
+                        "content": "Alice likes Rust.",
+                        "user_id": kwargs["user_id"],
+                        "metadata": {"source_index": 0},
+                        "created_at": "2026-05-13T00:00:00Z",
+                    },
+                    {
+                        "id": "m2",
+                        "content": "Alice lives in Paris.",
+                        "user_id": kwargs["user_id"],
+                        "metadata": {"source_index": 0},
+                        "created_at": "2026-05-13T00:00:01Z",
+                    },
+                ]
+            }
+        )
+
+    def add_messages(self, **kwargs):
+        self.calls.append(("add_messages", kwargs))
+        return Dumpable(
+            {
+                "results": [
+                    {
+                        "id": "m1",
+                        "content": "I prefer tea.",
+                        "user_id": kwargs["user_id"],
+                        "metadata": {"source_role": "user", "source_index": 0},
+                        "created_at": "2026-05-13T00:00:00Z",
+                    },
+                    {
+                        "id": "m2",
+                        "content": "Noted.",
+                        "user_id": kwargs["user_id"],
+                        "metadata": {"source_role": "assistant", "source_index": 1},
+                        "created_at": "2026-05-13T00:00:01Z",
+                    },
+                ]
+            }
+        )
+
     def search(self, **kwargs):
         self.calls.append(("search", kwargs))
         return Dumpable({"results": [], "formatted_context": "ctx"})
@@ -47,6 +93,61 @@ def memory_with_fake_client():
     fake = FakeClient()
     memory._client = fake
     return memory, fake
+
+
+def test_add_content_returns_all_fanned_out_results():
+    memory, fake = memory_with_fake_client()
+
+    result = memory.add(
+        "Alice likes Rust. Alice lives in Paris.",
+        user_id="u1",
+        scope="profile",
+    )
+
+    assert [item["content"] for item in result["results"]] == [
+        "Alice likes Rust.",
+        "Alice lives in Paris.",
+    ]
+    assert fake.calls == [
+        (
+            "add",
+            {
+                "user_id": "u1",
+                "content": "Alice likes Rust. Alice lives in Paris.",
+                "metadata": {"scope": "profile"},
+            },
+        )
+    ]
+
+
+def test_add_messages_forwards_message_payload_and_returns_fanned_out_results():
+    memory, fake = memory_with_fake_client()
+    messages = [
+        {"role": "user", "content": "I prefer tea."},
+        {"role": "assistant", "content": "Noted."},
+    ]
+
+    result = memory.add(messages, user_id="u1", agent_id="agent-a")
+
+    assert [item["content"] for item in result["results"]] == [
+        "I prefer tea.",
+        "Noted.",
+    ]
+    assert result["results"][0]["metadata"] == {"source_role": "user", "source_index": 0}
+    assert result["results"][1]["metadata"] == {
+        "source_role": "assistant",
+        "source_index": 1,
+    }
+    assert fake.calls == [
+        (
+            "add_messages",
+            {
+                "user_id": "u1",
+                "messages": messages,
+                "metadata": {"agent_id": "agent-a"},
+            },
+        )
+    ]
 
 
 def test_search_forwards_mem0_style_filters():

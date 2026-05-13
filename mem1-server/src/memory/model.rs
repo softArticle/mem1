@@ -21,7 +21,11 @@ pub struct Memory {
 }
 
 impl Memory {
-    pub fn new(content: String, user_id: String, metadata: HashMap<String, serde_json::Value>) -> Self {
+    pub fn new(
+        content: String,
+        user_id: String,
+        metadata: HashMap<String, serde_json::Value>,
+    ) -> Self {
         let now: String = chrono::Utc::now().to_rfc3339();
         Self {
             id: Uuid::new_v4().to_string(),

@@ -67,7 +67,9 @@ impl IntoResponse for Error {
         let (status, code) = match &self {
             Error::InvalidInput(_) => (StatusCode::BAD_REQUEST, self.code()),
             Error::NotFound => (StatusCode::NOT_FOUND, self.code()),
-            Error::Storage(_) | Error::Embedding(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.code()),
+            Error::Storage(_) | Error::Embedding(_) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, self.code())
+            }
         };
         let body = ErrorBody {
             code: code.to_string(),

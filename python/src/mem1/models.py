@@ -14,6 +14,7 @@ class AddByContent(BaseModel):
 class AddByMessages(BaseModel):
     user_id: str
     messages: list[dict[str, str]]
+    metadata: Optional[dict[str, Any]] = None
 
 
 class SearchRequest(BaseModel):

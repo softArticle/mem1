@@ -5,6 +5,9 @@ use crate::api::dto::{
 };
 use crate::app_state::AppState;
 use crate::error::Error;
+use crate::memory::extraction::{
+    detect_language, extract_facts, ExtractedFact, SourceText, EXTRACTOR_VERSION,
+};
 use crate::memory::model::Memory;
 use crate::storage::{MemoryFilters, MemoryStore};
 use axum::extract::{Path, Query, State};
@@ -111,43 +114,137 @@ fn memory_to_result(memory: Memory, score: Option<f32>) -> MemoryResult {
     }
 }
 
+fn sources_original_content(sources: &[SourceText]) -> String {
+    sources
+        .iter()
+        .map(|source| source.text.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn fallback_fact(sources: &[SourceText]) -> ExtractedFact {
+    let content = sources_original_content(sources);
+    let (source_role, source_index) = if sources.len() == 1 {
+        let source = &sources[0];
+        let role = source.role.trim();
+        (
+            if role.is_empty() {
+                "message".to_string()
+            } else {
+                role.to_string()
+            },
+            source.index,
+        )
+    } else {
+        ("messages".to_string(), 0)
+    };
+
+    ExtractedFact {
+        language: detect_language(&content).to_string(),
+        source_text: content.clone(),
+        content,
+        source_role,
+        source_index,
+    }
+}
+
+fn metadata_for_fact(
+    base: &HashMap<String, serde_json::Value>,
+    fact: &ExtractedFact,
+) -> HashMap<String, serde_json::Value> {
+    let mut metadata = base.clone();
+    metadata.insert(
+        "source_text".to_string(),
+        serde_json::Value::String(fact.source_text.clone()),
+    );
+    metadata.insert(
+        "source_role".to_string(),
+        serde_json::Value::String(fact.source_role.clone()),
+    );
+    metadata.insert(
+        "source_index".to_string(),
+        serde_json::json!(fact.source_index),
+    );
+    metadata.insert(
+        "language".to_string(),
+        serde_json::Value::String(fact.language.clone()),
+    );
+    metadata.insert(
+        "extractor_version".to_string(),
+        serde_json::Value::String(EXTRACTOR_VERSION.to_string()),
+    );
+    metadata
+}
+
 pub async fn add_memory(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AddMemoryRequest>,
 ) -> Result<(StatusCode, Json<AddResponse>), Error> {
-    let (user_id, content, metadata) = match req {
+    let (user_id, sources, metadata) = match req {
         AddMemoryRequest::ByContent {
             user_id,
             content,
             metadata,
-        } => (user_id, content, metadata),
-        AddMemoryRequest::ByMessages { user_id, messages } => {
-            let content = messages
+        } => (
+            user_id,
+            vec![SourceText {
+                text: content,
+                role: "content".to_string(),
+                index: 0,
+            }],
+            metadata,
+        ),
+        AddMemoryRequest::ByMessages {
+            user_id,
+            messages,
+            metadata,
+        } => {
+            let sources = messages
                 .into_iter()
-                .map(|m| m.content)
-                .filter(|s| !s.trim().is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-            (user_id, content, HashMap::new())
+                .enumerate()
+                .filter_map(|(index, m)| {
+                    if m.content.trim().is_empty() {
+                        None
+                    } else {
+                        Some(SourceText {
+                            text: m.content,
+                            role: m.role,
+                            index,
+                        })
+                    }
+                })
+                .collect();
+            (user_id, sources, metadata)
         }
     };
 
     if user_id.trim().is_empty() {
         return Err(Error::InvalidInput("user_id is required".to_string()));
     }
-    if content.trim().is_empty() {
+    if sources_original_content(&sources).trim().is_empty() {
         return Err(Error::InvalidInput("content is required".to_string()));
     }
 
-    let mut memory = Memory::new(content, user_id, metadata);
-    if let Some(vec) = state.embedder.embed_text(&memory.content).await? {
-        memory.embedding = Some(vec);
+    let mut facts = extract_facts(&sources);
+    if facts.is_empty() {
+        facts.push(fallback_fact(&sources));
     }
-    let created = state.store.add(&memory).await?;
 
-    let out = AddResponse {
-        results: vec![memory_to_result(created, None)],
-    };
+    let mut results = Vec::with_capacity(facts.len());
+    for fact in facts {
+        let mut memory = Memory::new(
+            fact.content.clone(),
+            user_id.clone(),
+            metadata_for_fact(&metadata, &fact),
+        );
+        if let Some(vec) = state.embedder.embed_text(&memory.content).await? {
+            memory.embedding = Some(vec);
+        }
+        results.push(memory_to_result(state.store.add(&memory).await?, None));
+    }
+
+    let out = AddResponse { results };
     Ok((StatusCode::CREATED, Json(out)))
 }
 
@@ -314,4 +411,195 @@ pub async fn reset_memories(
 ) -> Result<Json<DeleteAllResponse>, Error> {
     let deleted = state.store.reset().await?;
     Ok(Json(DeleteAllResponse { deleted }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::add_memory;
+    use crate::api::dto::{AddMemoryRequest, Message};
+    use crate::app_state::AppState;
+    use crate::memory::embedding::Embedder;
+    use crate::storage;
+    use axum::extract::State;
+    use axum::http::StatusCode;
+    use axum::Json;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    async fn test_state(name: &str) -> (String, Arc<AppState>) {
+        let db_path = std::env::temp_dir().join(format!(
+            "mem1-handler-test-{}-{}",
+            name,
+            uuid::Uuid::new_v4()
+        ));
+        let db_path = db_path.to_string_lossy().to_string();
+        let db = storage::connect(&db_path).await.unwrap();
+        storage::ensure_schema(&db).await.unwrap();
+        let state = Arc::new(AppState {
+            store: storage::store(db),
+            embedder: Embedder::Off,
+        });
+        (db_path, state)
+    }
+
+    #[tokio::test]
+    async fn add_content_stores_one_memory_per_extracted_fact_with_metadata() {
+        let (db_path, state) = test_state("content-fanout").await;
+        let mut metadata = HashMap::new();
+        metadata.insert("scope".to_string(), serde_json::json!("profile"));
+
+        let (status, Json(resp)) = add_memory(
+            State(state),
+            Json(AddMemoryRequest::ByContent {
+                user_id: "u1".to_string(),
+                content: " Alice likes Rust. Alice lives in Paris. ".to_string(),
+                metadata,
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(resp.results.len(), 2);
+        assert_eq!(resp.results[0].content, "Alice likes Rust.");
+        assert_eq!(resp.results[1].content, "Alice lives in Paris.");
+
+        for result in &resp.results {
+            assert_eq!(
+                result.metadata.get("scope").and_then(|v| v.as_str()),
+                Some("profile")
+            );
+            assert_eq!(
+                result.metadata.get("source_text").and_then(|v| v.as_str()),
+                Some("Alice likes Rust. Alice lives in Paris.")
+            );
+            assert_eq!(
+                result.metadata.get("source_role").and_then(|v| v.as_str()),
+                Some("content")
+            );
+            assert_eq!(
+                result.metadata.get("source_index").and_then(|v| v.as_u64()),
+                Some(0)
+            );
+            assert_eq!(
+                result.metadata.get("language").and_then(|v| v.as_str()),
+                Some("en")
+            );
+            assert_eq!(
+                result
+                    .metadata
+                    .get("extractor_version")
+                    .and_then(|v| v.as_str()),
+                Some("rule-v1")
+            );
+        }
+        assert_ne!(resp.results[0].id, resp.results[1].id);
+
+        let _ = std::fs::remove_dir_all(db_path);
+    }
+
+    #[tokio::test]
+    async fn add_messages_preserves_source_role_and_index_per_extracted_fact() {
+        let (db_path, state) = test_state("message-fanout").await;
+
+        let (status, Json(resp)) = add_memory(
+            State(state),
+            Json(AddMemoryRequest::ByMessages {
+                user_id: "u1".to_string(),
+                messages: vec![
+                    Message {
+                        role: "user".to_string(),
+                        content: "I prefer tea. I live in Berlin.".to_string(),
+                    },
+                    Message {
+                        role: "assistant".to_string(),
+                        content: "Noted.".to_string(),
+                    },
+                ],
+                metadata: HashMap::new(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(resp.results.len(), 3);
+        assert_eq!(resp.results[0].content, "I prefer tea.");
+        assert_eq!(resp.results[1].content, "I live in Berlin.");
+        assert_eq!(resp.results[2].content, "Noted.");
+
+        assert_eq!(
+            resp.results[0]
+                .metadata
+                .get("source_role")
+                .and_then(|v| v.as_str()),
+            Some("user")
+        );
+        assert_eq!(
+            resp.results[0]
+                .metadata
+                .get("source_index")
+                .and_then(|v| v.as_u64()),
+            Some(0)
+        );
+        assert_eq!(
+            resp.results[2]
+                .metadata
+                .get("source_role")
+                .and_then(|v| v.as_str()),
+            Some("assistant")
+        );
+        assert_eq!(
+            resp.results[2]
+                .metadata
+                .get("source_index")
+                .and_then(|v| v.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            resp.results[2]
+                .metadata
+                .get("source_text")
+                .and_then(|v| v.as_str()),
+            Some("Noted.")
+        );
+
+        let _ = std::fs::remove_dir_all(db_path);
+    }
+
+    #[tokio::test]
+    async fn add_content_falls_back_to_trimmed_original_when_no_fact_is_extracted() {
+        let (db_path, state) = test_state("fallback").await;
+
+        let (status, Json(resp)) = add_memory(
+            State(state),
+            Json(AddMemoryRequest::ByContent {
+                user_id: "u1".to_string(),
+                content: " \n ... \t".to_string(),
+                metadata: HashMap::new(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(resp.results.len(), 1);
+        assert_eq!(resp.results[0].content, "...");
+        assert_eq!(
+            resp.results[0]
+                .metadata
+                .get("source_text")
+                .and_then(|v| v.as_str()),
+            Some("...")
+        );
+        assert_eq!(
+            resp.results[0]
+                .metadata
+                .get("source_role")
+                .and_then(|v| v.as_str()),
+            Some("content")
+        );
+
+        let _ = std::fs::remove_dir_all(db_path);
+    }
 }

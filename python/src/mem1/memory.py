@@ -28,13 +28,21 @@ class Memory:
         if isinstance(messages, str):
             resp = self._client.add(user_id=user_id, content=messages, metadata=kwargs)
         else:
-            # Messages form: send as content (concatenate) or first message content for MVP
-            content = " ".join(
-                m.get("content", "") for m in messages if isinstance(m, dict) and m.get("content")
+            normalized_messages = [
+                {
+                    "role": str(m.get("role") or "message"),
+                    "content": str(m.get("content") or ""),
+                }
+                for m in messages
+                if isinstance(m, dict) and m.get("content")
+            ]
+            if not normalized_messages:
+                normalized_messages = [{"role": "message", "content": "(no content)"}]
+            resp = self._client.add_messages(
+                user_id=user_id,
+                messages=normalized_messages,
+                metadata=kwargs,
             )
-            if not content:
-                content = "(no content)"
-            resp = self._client.add(user_id=user_id, content=content, metadata=kwargs)
         return resp.model_dump()
 
     def search(

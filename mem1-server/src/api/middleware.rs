@@ -1,11 +1,6 @@
 //! Structured logging and X-Trace-Id (Constitution V, T007).
 
-use axum::{
-    extract::Request,
-    http::HeaderValue,
-    middleware::Next,
-    response::Response,
-};
+use axum::{extract::Request, http::HeaderValue, middleware::Next, response::Response};
 use tracing::Span;
 use uuid::Uuid;
 
@@ -20,7 +15,7 @@ pub async fn trace_layer(request: Request, next: Next) -> Response {
         .map(|s| s.to_string())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-    Span::current().record("trace_id", &tracing::field::display(&trace_id));
+    Span::current().record("trace_id", tracing::field::display(&trace_id));
 
     let mut response = next.run(request).await;
 

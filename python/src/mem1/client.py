@@ -53,6 +53,23 @@ class Mem1Client:
             self._raise(r)
         return AddResponse.model_validate(r.json())
 
+    def add_messages(
+        self,
+        user_id: str,
+        messages: list[dict[str, str]],
+        metadata: Optional[dict] = None,
+    ) -> AddResponse:
+        with httpx.Client() as client:
+            r = client.post(
+                f"{self.base_url}/memories",
+                json={"user_id": user_id, "messages": messages, "metadata": metadata or {}},
+                headers=self._headers(),
+                timeout=30.0,
+            )
+        if r.status_code != 201:
+            self._raise(r)
+        return AddResponse.model_validate(r.json())
+
     def search(
         self,
         user_id: str,
