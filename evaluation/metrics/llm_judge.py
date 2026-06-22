@@ -81,7 +81,6 @@ def evaluate_llm_judge(
                         ),
                     }
                 ],
-                "temperature": 0.0,
             },
             timeout=30.0,
         )
