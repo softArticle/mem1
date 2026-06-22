@@ -93,11 +93,11 @@ impl MemoryFilters {
 
 /// RRF constant (reciprocal rank fusion). score = 1/(k + rank).
 /// mem0 LOCOMO eval uses top_k=30 (we use same limit from client); mem0 has no RRF (vector + optional reranker).
-const RRF_K: u32 = 60;
+const RRF_K: u32 = 20;
 /// Extra weight for keyword path in RRF. 1.0 = equal weight with vector (align with mem0 not emphasizing keyword).
 const RRF_KEYWORD_WEIGHT: f32 = 1.0;
 const RRF_VECTOR_WEIGHT: f32 = 1.0;
-const RRF_GRAPH_WEIGHT: f32 = 1.0;
+const RRF_GRAPH_WEIGHT: f32 = 0.0;
 const MAX_GRAPH_ENTITIES_PER_MEMORY: usize = 16;
 const MAX_GRAPH_SEEDS: usize = 8;
 const QUERY_ENTITY_STOPWORDS: &[&str] = &[

@@ -129,7 +129,6 @@ class Mem1Search:
                     json={
                         "model": self._llm_model,
                         "messages": [{"role": "user", "content": prompt}],
-                        "temperature": 0.0,
                     },
                     timeout=60.0,
                 )

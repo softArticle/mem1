@@ -1,4 +1,4 @@
-pub const EXTRACTOR_VERSION: &str = "rule-v1";
+pub const EXTRACTOR_VERSION: &str = "rule-v2";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceText {
@@ -59,12 +59,15 @@ fn normalize_whitespace(text: &str) -> String {
 }
 
 fn split_fact_candidates(text: &str) -> Vec<String> {
+    // rule-v2: keep the whole message as one context-rich fact instead of
+    // splitting on sentence punctuation. Sentence-level splitting strips
+    // referents (e.g. "It taught me ..." loses its subject), hurting retrieval
+    // precision. One memory per message preserves self-contained context.
     let mut out = Vec::new();
     let mut current = String::new();
-
     for ch in text.chars() {
         current.push(ch);
-        if matches!(ch, '.' | '!' | '?' | '\n') {
+        if ch == '\n' {
             push_candidate(&mut out, &mut current);
         }
     }
@@ -96,16 +99,15 @@ mod tests {
     use super::{extract_facts, SourceText, EXTRACTOR_VERSION};
 
     #[test]
-    fn extract_facts_splits_sentence_like_atomic_facts() {
+    fn extract_facts_keeps_whole_message_as_one_fact() {
         let facts = extract_facts(&[SourceText {
             text: " Alice likes Rust. Alice lives in Paris. ".to_string(),
             role: "content".to_string(),
             index: 0,
         }]);
 
-        assert_eq!(facts.len(), 2);
-        assert_eq!(facts[0].content, "Alice likes Rust.");
-        assert_eq!(facts[1].content, "Alice lives in Paris.");
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].content, "Alice likes Rust. Alice lives in Paris.");
         assert_eq!(
             facts[0].source_text,
             "Alice likes Rust. Alice lives in Paris."
@@ -113,7 +115,7 @@ mod tests {
         assert_eq!(facts[0].source_role, "content");
         assert_eq!(facts[0].source_index, 0);
         assert_eq!(facts[0].language, "en");
-        assert_eq!(EXTRACTOR_VERSION, "rule-v1");
+        assert_eq!(EXTRACTOR_VERSION, "rule-v2");
     }
 
     #[test]
