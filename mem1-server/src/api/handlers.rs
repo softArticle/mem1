@@ -450,6 +450,7 @@ mod tests {
         let state = Arc::new(AppState {
             store: storage::store(db),
             embedder: Embedder::Off,
+            extractor: None,
         });
         (db_path, state)
     }
@@ -472,9 +473,12 @@ mod tests {
         .unwrap();
 
         assert_eq!(status, StatusCode::CREATED);
-        assert_eq!(resp.results.len(), 2);
-        assert_eq!(resp.results[0].content, "Alice likes Rust.");
-        assert_eq!(resp.results[1].content, "Alice lives in Paris.");
+        // rule-v2 keeps the whole message as one context-rich fact.
+        assert_eq!(resp.results.len(), 1);
+        assert_eq!(
+            resp.results[0].content,
+            "Alice likes Rust. Alice lives in Paris."
+        );
 
         for result in &resp.results {
             assert_eq!(
@@ -502,10 +506,9 @@ mod tests {
                     .metadata
                     .get("extractor_version")
                     .and_then(|v| v.as_str()),
-                Some("rule-v1")
+                Some("rule-v2")
             );
         }
-        assert_ne!(resp.results[0].id, resp.results[1].id);
 
         let _ = std::fs::remove_dir_all(db_path);
     }
@@ -535,10 +538,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(status, StatusCode::CREATED);
-        assert_eq!(resp.results.len(), 3);
-        assert_eq!(resp.results[0].content, "I prefer tea.");
-        assert_eq!(resp.results[1].content, "I live in Berlin.");
-        assert_eq!(resp.results[2].content, "Noted.");
+        // rule-v2: one fact per message (whole message), so two messages -> two facts.
+        assert_eq!(resp.results.len(), 2);
+        assert_eq!(resp.results[0].content, "I prefer tea. I live in Berlin.");
+        assert_eq!(resp.results[1].content, "Noted.");
 
         assert_eq!(
             resp.results[0]
@@ -555,21 +558,21 @@ mod tests {
             Some(0)
         );
         assert_eq!(
-            resp.results[2]
+            resp.results[1]
                 .metadata
                 .get("source_role")
                 .and_then(|v| v.as_str()),
             Some("assistant")
         );
         assert_eq!(
-            resp.results[2]
+            resp.results[1]
                 .metadata
                 .get("source_index")
                 .and_then(|v| v.as_u64()),
             Some(1)
         );
         assert_eq!(
-            resp.results[2]
+            resp.results[1]
                 .metadata
                 .get("source_text")
                 .and_then(|v| v.as_str()),

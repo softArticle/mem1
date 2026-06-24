@@ -93,11 +93,29 @@ impl MemoryFilters {
 
 /// RRF constant (reciprocal rank fusion). score = 1/(k + rank).
 /// mem0 LOCOMO eval uses top_k=30 (we use same limit from client); mem0 has no RRF (vector + optional reranker).
-const RRF_K: u32 = 60;
-/// Extra weight for keyword path in RRF. 1.0 = equal weight with vector (align with mem0 not emphasizing keyword).
+///
+/// Defaults are tuned for the LLM-extraction line (atomic facts): RRF_K=60 and an
+/// active graph branch maximize LOCOMO here. The rule-v2 line (whole-message facts)
+/// prefers RRF_K=20 with the graph branch off; both are reachable at runtime via
+/// MEM1_RRF_K / MEM1_RRF_GRAPH_WEIGHT so a single binary serves either extraction mode.
+const DEFAULT_RRF_K: u32 = 60;
 const RRF_KEYWORD_WEIGHT: f32 = 1.0;
 const RRF_VECTOR_WEIGHT: f32 = 1.0;
-const RRF_GRAPH_WEIGHT: f32 = 1.0;
+const DEFAULT_RRF_GRAPH_WEIGHT: f32 = 1.0;
+
+fn rrf_k() -> u32 {
+    std::env::var("MEM1_RRF_K")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_RRF_K)
+}
+
+fn rrf_graph_weight() -> f32 {
+    std::env::var("MEM1_RRF_GRAPH_WEIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_RRF_GRAPH_WEIGHT)
+}
 const MAX_GRAPH_ENTITIES_PER_MEMORY: usize = 16;
 const MAX_GRAPH_SEEDS: usize = 8;
 const QUERY_ENTITY_STOPWORDS: &[&str] = &[
@@ -381,13 +399,13 @@ fn rrf_merge(
     graph_list: Vec<(String, Memory)>,
     limit: u32,
 ) -> Vec<(Memory, Option<f32>)> {
-    let k = RRF_K as f32;
+    let k = rrf_k() as f32;
     let mut scores: HashMap<String, f32> = HashMap::new();
     let mut memories: HashMap<String, Memory> = HashMap::new();
     for (weight, list) in [
         (RRF_KEYWORD_WEIGHT, kw_list),
         (RRF_VECTOR_WEIGHT, vec_list),
-        (RRF_GRAPH_WEIGHT, graph_list),
+        (rrf_graph_weight(), graph_list),
     ] {
         for (rank_one_based, (id, mem)) in list.into_iter().enumerate() {
             let r = (rank_one_based + 1) as f32;
@@ -752,6 +770,11 @@ impl SurrealMemoryStore {
         let mut query_entity_hits: HashMap<String, u32> = HashMap::new();
         let mut candidate_ids: Vec<String> = Vec::new();
         let mut seen_candidate: HashSet<String> = HashSet::new();
+        // Candidates linked only through an entity shared with a seed hit (not a
+        // query entity, no query-term overlap) are legitimate graph-context
+        // expansions — they answer "what else is connected to this result". Keep
+        // them even when they don't match the query text directly.
+        let mut seed_linked: HashSet<String> = HashSet::new();
         for entity_id in &entity_ids {
             let is_query_entity = query_entity_ids.contains(entity_id);
             let mut response = self
@@ -774,6 +797,8 @@ impl SurrealMemoryStore {
             for row in rows {
                 if is_query_entity {
                     *query_entity_hits.entry(row.memory_id.clone()).or_default() += 1;
+                } else {
+                    seed_linked.insert(row.memory_id.clone());
                 }
                 if seen_candidate.insert(row.memory_id.clone()) {
                     candidate_ids.push(row.memory_id);
@@ -863,11 +888,16 @@ impl SurrealMemoryStore {
                         }
                     }
                     // The graph branch should only contribute memories that actually
-                    // connect to the query — either via a query-intent entity or via
-                    // a content word in the text. A candidate that matches neither is
-                    // a high-frequency-entity coattail (e.g. "Caroline: Wow!") and
-                    // only dilutes the fused ranking, so drop it here.
-                    if entity_score == 0 && overlap == 0 {
+                    // connect to the query — via a query-intent entity or a content
+                    // word. A candidate matching neither is a high-frequency-entity
+                    // coattail (e.g. "Caroline: Wow!") that dilutes ranking, so drop
+                    // it. Exception: when the query names no entity at all, a seed-
+                    // linked neighbor IS the graph-expansion signal (e.g. query
+                    // "passport" pulling in a hotel memory sharing entity "Alice"),
+                    // so keep it.
+                    let keep_seed_expansion =
+                        seed_linked.contains(&memory_id) && query_entity_ids.is_empty();
+                    if entity_score == 0 && overlap == 0 && !keep_seed_expansion {
                         continue;
                     }
                     scored.push((entity_score, overlap, mem.id.clone(), mem));
