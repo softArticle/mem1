@@ -64,32 +64,49 @@ def evaluate_llm_judge(
     base_url = (os.getenv("EVAL_LLM_BASE_URL") or os.getenv("OPENAI_BASE_URL") or "").rstrip("/")
     if not base_url:
         return 0
-    try:
-        url = f"{base_url}/chat/completions"
-        r = httpx.post(
-            url,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": ACCURACY_PROMPT.format(
-                            question=question,
-                            gold_answer=gold_answer,
-                            generated_answer=generated_answer,
-                        ),
-                    }
-                ],
-            },
-            timeout=30.0,
-        )
-        if r.status_code != 200:
-            return 0
-        data = r.json()
-        content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "{}")
-        obj = json.loads(extract_json(content))
-        label = obj.get("label", "WRONG").upper()
-        return 1 if label == "CORRECT" else 0
-    except Exception:
-        return 0
+    # Retry on transient gateway failures (non-200, network, parse). Without this,
+    # ~20-30 of 304 QAs get judged 0 per run purely from gateway jitter, and since
+    # a different subset fails each run the overall score drifts ±0.04 — enough to
+    # bury real optimization deltas. A genuine "WRONG" label still returns 0; only
+    # infrastructure failures are retried.
+    url = f"{base_url}/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": ACCURACY_PROMPT.format(
+                    question=question,
+                    gold_answer=gold_answer,
+                    generated_answer=generated_answer,
+                ),
+            }
+        ],
+    }
+    import time as _time
+
+    last_err = None
+    for attempt in range(4):
+        try:
+            r = httpx.post(
+                url,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=60.0,
+            )
+            if r.status_code != 200:
+                last_err = f"status {r.status_code}"
+                _time.sleep(1.5 * (attempt + 1))
+                continue
+            data = r.json()
+            content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "{}")
+            obj = json.loads(extract_json(content))
+            label = obj.get("label", "WRONG").upper()
+            return 1 if label == "CORRECT" else 0
+        except Exception as e:  # noqa: BLE001 — transient; retry
+            last_err = str(e)
+            _time.sleep(1.5 * (attempt + 1))
+    import sys
+
+    print(f"[llm_judge] giving up after retries ({last_err})", file=sys.stderr)
+    return 0

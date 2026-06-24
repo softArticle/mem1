@@ -121,24 +121,30 @@ class Mem1Search:
         response_time = 0.0
         if self._llm_ok:
             t0 = time.time()
-            try:
-                url = f"{self._llm_base_url}/chat/completions"
-                r = httpx.post(
-                    url,
-                    headers={"Authorization": f"Bearer {self._llm_api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": self._llm_model,
-                        "messages": [{"role": "user", "content": prompt}],
-                    },
-                    timeout=60.0,
-                )
-                if r.status_code == 200:
-                    data = r.json()
-                    response_text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
-                else:
+            url = f"{self._llm_base_url}/chat/completions"
+            payload = {
+                "model": self._llm_model,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            # Retry transient gateway failures so a flaky call doesn't become a
+            # permanent "(LLM error)" that scores 0 and adds noise to the metric.
+            response_text = "(LLM error: no attempt)"
+            for attempt in range(4):
+                try:
+                    r = httpx.post(
+                        url,
+                        headers={"Authorization": f"Bearer {self._llm_api_key}", "Content-Type": "application/json"},
+                        json=payload,
+                        timeout=60.0,
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        response_text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+                        break
                     response_text = f"(LLM error {r.status_code})"
-            except Exception as e:
-                response_text = f"(LLM error: {e})"
+                except Exception as e:
+                    response_text = f"(LLM error: {e})"
+                time.sleep(1.5 * (attempt + 1))
             response_time = time.time() - t0
         else:
             response_text = "(OPENAI_API_KEY not set; skip LLM answer)"
