@@ -46,3 +46,6 @@ specs/
 .specs/
 toolchain/
 toolchain_data/
+
+.claude/worktrees/
+.claude/

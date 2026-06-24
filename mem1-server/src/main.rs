@@ -23,7 +23,11 @@ async fn main() -> anyhow::Result<()> {
     storage::ensure_schema(&db).await?;
     let store = storage::store(db);
     let embedder = Embedder::from_env()?;
-    let state = Arc::new(AppState { store, embedder });
+    let extractor = mem1_server::memory::llm_extract::LlmExtractor::from_env();
+    if extractor.is_some() {
+        tracing::info!("LLM fact extraction enabled (llm-v1)");
+    }
+    let state = Arc::new(AppState { store, embedder, extractor });
 
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))

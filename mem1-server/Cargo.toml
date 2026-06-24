@@ -7,7 +7,7 @@ description = "Local AI memory service (Rust server)"
 [features]
 default = ["local-embed"]
 # In-process ONNX embedding (tract, pure Rust). No native libs, works on macOS.
-local-embed = ["dep:tract-onnx", "dep:tokenizers", "dep:ndarray", "dep:reqwest"]
+local-embed = ["dep:tract-onnx", "dep:tokenizers", "dep:ndarray"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -27,7 +27,7 @@ rig-core = { version = "0.32.0", default-features = false, features = ["reqwest-
 tract-onnx = { version = "0.22.1", optional = true }
 tokenizers = { version = "0.21", optional = true }
 ndarray = { version = "0.16", optional = true }
-reqwest = { version = "0.12", optional = true, default-features = false, features = ["blocking", "native-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "native-tls"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

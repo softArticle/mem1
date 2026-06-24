@@ -59,10 +59,11 @@ fn normalize_whitespace(text: &str) -> String {
 }
 
 fn split_fact_candidates(text: &str) -> Vec<String> {
-    // rule-v2: keep the whole message as one context-rich fact instead of
-    // splitting on sentence punctuation. Sentence-level splitting strips
-    // referents (e.g. "It taught me ..." loses its subject), hurting retrieval
-    // precision. One memory per message preserves self-contained context.
+    // rule-v2 (ported from the main line): keep the whole message as one
+    // context-rich fact instead of splitting on sentence punctuation. Sentence
+    // splitting strips referents (e.g. "It taught me ..." loses its subject),
+    // hurting retrieval precision. One memory per message preserves self-contained
+    // context. (When MEM1_EXTRACT_PROVIDER=openai, the LLM extractor supersedes this.)
     let mut out = Vec::new();
     let mut current = String::new();
     for ch in text.chars() {

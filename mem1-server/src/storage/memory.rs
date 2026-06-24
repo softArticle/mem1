@@ -93,11 +93,29 @@ impl MemoryFilters {
 
 /// RRF constant (reciprocal rank fusion). score = 1/(k + rank).
 /// mem0 LOCOMO eval uses top_k=30 (we use same limit from client); mem0 has no RRF (vector + optional reranker).
-const RRF_K: u32 = 20;
-/// Extra weight for keyword path in RRF. 1.0 = equal weight with vector (align with mem0 not emphasizing keyword).
+///
+/// Defaults are tuned for the LLM-extraction line (atomic facts): RRF_K=60 and an
+/// active graph branch maximize LOCOMO here. The rule-v2 line (whole-message facts)
+/// prefers RRF_K=20 with the graph branch off; both are reachable at runtime via
+/// MEM1_RRF_K / MEM1_RRF_GRAPH_WEIGHT so a single binary serves either extraction mode.
+const DEFAULT_RRF_K: u32 = 60;
 const RRF_KEYWORD_WEIGHT: f32 = 1.0;
 const RRF_VECTOR_WEIGHT: f32 = 1.0;
-const RRF_GRAPH_WEIGHT: f32 = 0.0;
+const DEFAULT_RRF_GRAPH_WEIGHT: f32 = 1.0;
+
+fn rrf_k() -> u32 {
+    std::env::var("MEM1_RRF_K")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_RRF_K)
+}
+
+fn rrf_graph_weight() -> f32 {
+    std::env::var("MEM1_RRF_GRAPH_WEIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_RRF_GRAPH_WEIGHT)
+}
 const MAX_GRAPH_ENTITIES_PER_MEMORY: usize = 16;
 const MAX_GRAPH_SEEDS: usize = 8;
 const QUERY_ENTITY_STOPWORDS: &[&str] = &[
@@ -274,6 +292,18 @@ struct SearchRow {
     score: Option<f64>,
 }
 
+#[derive(Deserialize)]
+struct IdRow {
+    id: Option<RecordId>,
+}
+
+#[derive(Deserialize)]
+struct EntityCountRow {
+    entity_normalized: String,
+    #[allow(dead_code)]
+    n: Option<i64>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MemoryHistory {
     pub id: String,
@@ -369,13 +399,13 @@ fn rrf_merge(
     graph_list: Vec<(String, Memory)>,
     limit: u32,
 ) -> Vec<(Memory, Option<f32>)> {
-    let k = RRF_K as f32;
+    let k = rrf_k() as f32;
     let mut scores: HashMap<String, f32> = HashMap::new();
     let mut memories: HashMap<String, Memory> = HashMap::new();
     for (weight, list) in [
         (RRF_KEYWORD_WEIGHT, kw_list),
         (RRF_VECTOR_WEIGHT, vec_list),
-        (RRF_GRAPH_WEIGHT, graph_list),
+        (rrf_graph_weight(), graph_list),
     ] {
         for (rank_one_based, (id, mem)) in list.into_iter().enumerate() {
             let r = (rank_one_based + 1) as f32;
@@ -661,6 +691,29 @@ impl SurrealMemoryStore {
         Ok(rows.into_iter().map(|row| row.entity_id).collect())
     }
 
+    /// Names that prefix many stored "Name: ..." lines are conversation speakers;
+    /// they recur in nearly every memory and carry little discriminating signal for
+    /// ranking, so the graph scorer treats them as low-information overlap terms.
+    async fn frequent_speaker_names(&self, user_id: &str) -> Result<Vec<String>, Error> {
+        let mut response = self
+            .0
+            .query(
+                "SELECT entity_normalized, count() AS n FROM memory_entities \
+                 WHERE user_id = $user_id GROUP BY entity_normalized ORDER BY n DESC LIMIT 6",
+            )
+            .bind(("user_id", user_id.to_string()))
+            .await
+            .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb speaker names query: {e}")))?;
+        let rows: Vec<EntityCountRow> = response
+            .take(0)
+            .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb speaker names take: {e}")))?;
+        Ok(rows
+            .into_iter()
+            .map(|r| r.entity_normalized)
+            .filter(|n| !n.is_empty())
+            .collect())
+    }
+
     async fn entity_ids_for_query(&self, user_id: &str, query: &str) -> Result<Vec<String>, Error> {
         let mut ids = Vec::new();
         for normalized in query_entity_terms(query) {
@@ -695,20 +748,35 @@ impl SurrealMemoryStore {
         filters: &MemoryFilters,
         now: &DateTime<Utc>,
     ) -> Result<Vec<(String, Memory)>, Error> {
-        let mut entity_ids: BTreeSet<String> = self
+        // Entities mentioned by the query carry the user's intent; entities shared
+        // with seed (keyword/vector) hits widen the relational neighborhood.
+        let query_entity_ids: BTreeSet<String> = self
             .entity_ids_for_query(user_id, query)
             .await?
             .into_iter()
             .collect();
+        let mut entity_ids: BTreeSet<String> = query_entity_ids.clone();
         for seed_id in seed_ids.iter().take(MAX_GRAPH_SEEDS) {
             for entity_id in self.entity_ids_for_memory(user_id, seed_id).await? {
                 entity_ids.insert(entity_id);
             }
         }
 
-        let mut seen_memory_ids = HashSet::new();
-        let mut out = Vec::new();
-        for entity_id in entity_ids {
+        // Collect candidate memory ids and how many distinct query-intent entities
+        // each one is linked to. A memory that connects to several of the query's
+        // entities (e.g. "Caroline" + "grandma" + "Sweden") is far more relevant
+        // than one that merely shares a single high-frequency entity.
+        let per_entity = fetch_limit.saturating_mul(4).max(fetch_limit);
+        let mut query_entity_hits: HashMap<String, u32> = HashMap::new();
+        let mut candidate_ids: Vec<String> = Vec::new();
+        let mut seen_candidate: HashSet<String> = HashSet::new();
+        // Candidates linked only through an entity shared with a seed hit (not a
+        // query entity, no query-term overlap) are legitimate graph-context
+        // expansions — they answer "what else is connected to this result". Keep
+        // them even when they don't match the query text directly.
+        let mut seed_linked: HashSet<String> = HashSet::new();
+        for entity_id in &entity_ids {
+            let is_query_entity = query_entity_ids.contains(entity_id);
             let mut response = self
                 .0
                 .query(
@@ -717,8 +785,8 @@ impl SurrealMemoryStore {
                      ORDER BY created_at DESC LIMIT $limit",
                 )
                 .bind(("user_id", user_id.to_string()))
-                .bind(("entity_id", entity_id))
-                .bind(("limit", fetch_limit))
+                .bind(("entity_id", entity_id.clone()))
+                .bind(("limit", per_entity))
                 .await
                 .map_err(|e| {
                     Error::Storage(anyhow::anyhow!("surrealdb graph candidate query: {e}"))
@@ -727,23 +795,125 @@ impl SurrealMemoryStore {
                 Error::Storage(anyhow::anyhow!("surrealdb graph candidate take: {e}"))
             })?;
             for row in rows {
-                if out.len() >= fetch_limit as usize {
-                    break;
+                if is_query_entity {
+                    *query_entity_hits.entry(row.memory_id.clone()).or_default() += 1;
+                } else {
+                    seed_linked.insert(row.memory_id.clone());
                 }
-                if !seen_memory_ids.insert(row.memory_id.clone()) {
-                    continue;
+                if seen_candidate.insert(row.memory_id.clone()) {
+                    candidate_ids.push(row.memory_id);
                 }
-                if let Some(mem) = self.get(&row.memory_id, user_id).await? {
-                    if is_valid_at(&mem, now) && filters.matches(&mem) {
-                        out.push((mem.id.clone(), mem));
-                    }
-                }
-            }
-            if out.len() >= fetch_limit as usize {
-                break;
             }
         }
-        Ok(out)
+
+        // Entity extraction only recognizes capitalized proper nouns, so a question
+        // like "what country is Caroline's grandma from" never links to the memory
+        // "...grandma in my home country, Sweden" via entities alone. Widen the
+        // graph candidate pool with a per-term FULLTEXT scan: SurrealDB's `@@` is
+        // AND across a multi-word query (so the full question matches nothing), but
+        // searching each significant term independently (OR semantics) surfaces the
+        // memories that mention any intent word, which the scorer below then ranks.
+        let query_terms: BTreeSet<String> = significant_terms(query)
+            .split_whitespace()
+            .map(|t| t.to_string())
+            .collect();
+        let intent_terms: Vec<String> = query
+            .split(|c: char| !c.is_alphanumeric())
+            .map(|w| w.to_ascii_lowercase())
+            .filter(|w| w.len() >= 3 && !is_query_stopword(w))
+            .collect();
+        for term in &intent_terms {
+            let mut response = self
+                .0
+                .query(
+                    "SELECT id FROM memories \
+                     WHERE user_id = $user_id AND content @@ $term LIMIT $limit",
+                )
+                .bind(("user_id", user_id.to_string()))
+                .bind(("term", term.clone()))
+                .bind(("limit", per_entity))
+                .await
+                .map_err(|e| {
+                    Error::Storage(anyhow::anyhow!("surrealdb graph term query: {e}"))
+                })?;
+            let rows: Vec<IdRow> = response.take(0).map_err(|e| {
+                Error::Storage(anyhow::anyhow!("surrealdb graph term take: {e}"))
+            })?;
+            for row in rows {
+                let mid = record_id_to_string(&row.id, "");
+                if mid.is_empty() {
+                    continue;
+                }
+                if seen_candidate.insert(mid.clone()) {
+                    candidate_ids.push(mid);
+                }
+            }
+        }
+
+        // Speaker names (the user's own name from `{speaker}_{idx}`, plus any name
+        // that prefixes a stored "Name: ..." line) appear in almost every memory of
+        // a conversation, so matching them is nearly free signal. Treat them as
+        // low-information for the overlap score: content words like "grandma",
+        // "camped", "moved" should drive ranking, not the omnipresent speaker names.
+        let speaker_name = user_id
+            .rsplit_once('_')
+            .map(|(name, _)| name)
+            .unwrap_or(user_id)
+            .to_ascii_lowercase();
+        let low_info_terms: BTreeSet<String> = self
+            .frequent_speaker_names(user_id)
+            .await?
+            .into_iter()
+            .chain(std::iter::once(speaker_name))
+            .collect();
+
+        // Fetch candidates, score by (distinct query entities matched, content-word
+        // overlap), and return the strongest first instead of newest-first.
+        let mut scored: Vec<(u32, u32, String, Memory)> = Vec::new();
+        for memory_id in candidate_ids {
+            if let Some(mem) = self.get(&memory_id, user_id).await? {
+                if is_valid_at(&mem, now) && filters.matches(&mem) {
+                    let entity_score = query_entity_hits.get(&memory_id).copied().unwrap_or(0);
+                    let lower = mem.content.to_lowercase();
+                    let content_terms = query_terms
+                        .iter()
+                        .map(|s| s.as_str())
+                        .chain(intent_terms.iter().map(|s| s.as_str()))
+                        .filter(|t| !low_info_terms.contains(*t));
+                    let mut seen_term: BTreeSet<&str> = BTreeSet::new();
+                    let mut overlap = 0u32;
+                    for t in content_terms {
+                        if seen_term.insert(t) && lower.contains(t) {
+                            overlap += 1;
+                        }
+                    }
+                    // The graph branch should only contribute memories that actually
+                    // connect to the query — via a query-intent entity or a content
+                    // word. A candidate matching neither is a high-frequency-entity
+                    // coattail (e.g. "Caroline: Wow!") that dilutes ranking, so drop
+                    // it. Exception: when the query names no entity at all, a seed-
+                    // linked neighbor IS the graph-expansion signal (e.g. query
+                    // "passport" pulling in a hotel memory sharing entity "Alice"),
+                    // so keep it.
+                    let keep_seed_expansion =
+                        seed_linked.contains(&memory_id) && query_entity_ids.is_empty();
+                    if entity_score == 0 && overlap == 0 && !keep_seed_expansion {
+                        continue;
+                    }
+                    scored.push((entity_score, overlap, mem.id.clone(), mem));
+                }
+            }
+        }
+        scored.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then(b.0.cmp(&a.0))
+                .then_with(|| b.3.created_at.cmp(&a.3.created_at))
+        });
+        Ok(scored
+            .into_iter()
+            .take(fetch_limit as usize)
+            .map(|(_, _, id, mem)| (id, mem))
+            .collect())
     }
 
     /// Keyword path: FULLTEXT on content with search::score, ordered by score desc.

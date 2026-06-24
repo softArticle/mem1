@@ -2,6 +2,7 @@
 pub mod download;
 pub mod embedding;
 pub mod extraction;
+pub mod llm_extract;
 #[cfg(feature = "local-embed")]
 pub mod local_embed;
 pub mod model;

@@ -47,7 +47,7 @@ class Mem1Client:
                 f"{self.base_url}/memories",
                 json={"user_id": user_id, "content": content, "metadata": metadata or {}},
                 headers=self._headers(),
-                timeout=30.0,
+                timeout=120.0,
             )
         if r.status_code != 201:
             self._raise(r)
@@ -64,7 +64,7 @@ class Mem1Client:
                 f"{self.base_url}/memories",
                 json={"user_id": user_id, "messages": messages, "metadata": metadata or {}},
                 headers=self._headers(),
-                timeout=30.0,
+                timeout=120.0,
             )
         if r.status_code != 201:
             self._raise(r)
@@ -82,7 +82,7 @@ class Mem1Client:
                 f"{self.base_url}/memories/search",
                 json={"user_id": user_id, "query": query, "limit": limit, "filters": filters or {}},
                 headers=self._headers(),
-                timeout=30.0,
+                timeout=120.0,
             )
         if r.status_code != 200:
             self._raise(r)
@@ -102,7 +102,7 @@ class Mem1Client:
                 f"{self.base_url}/memories",
                 params=params,
                 headers=self._headers(),
-                timeout=30.0,
+                timeout=120.0,
             )
         if r.status_code != 200:
             self._raise(r)
@@ -114,7 +114,7 @@ class Mem1Client:
                 f"{self.base_url}/memories/{memory_id}",
                 params={"user_id": user_id},
                 headers=self._headers(),
-                timeout=30.0,
+                timeout=120.0,
             )
         if r.status_code == 404:
             return None
@@ -134,7 +134,7 @@ class Mem1Client:
                 f"{self.base_url}/memories/{memory_id}",
                 json={"user_id": user_id, "content": content, "metadata": metadata or {}},
                 headers=self._headers(),
-                timeout=30.0,
+                timeout=120.0,
             )
         if r.status_code != 200:
             self._raise(r)
@@ -146,7 +146,7 @@ class Mem1Client:
                 f"{self.base_url}/memories/{memory_id}",
                 params={"user_id": user_id},
                 headers=self._headers(),
-                timeout=30.0,
+                timeout=120.0,
             )
         if r.status_code == 404:
             return False
@@ -166,7 +166,7 @@ class Mem1Client:
                 f"{self.base_url}/memories",
                 params=params,
                 headers=self._headers(),
-                timeout=30.0,
+                timeout=120.0,
             )
         if r.status_code != 200:
             self._raise(r)
@@ -178,7 +178,7 @@ class Mem1Client:
                 f"{self.base_url}/memories/{memory_id}/history",
                 params={"user_id": user_id},
                 headers=self._headers(),
-                timeout=30.0,
+                timeout=120.0,
             )
         if r.status_code != 200:
             self._raise(r)
@@ -189,7 +189,7 @@ class Mem1Client:
             r = client.get(
                 f"{self.base_url}/users",
                 headers=self._headers(),
-                timeout=30.0,
+                timeout=120.0,
             )
         if r.status_code != 200:
             self._raise(r)
@@ -200,7 +200,7 @@ class Mem1Client:
             r = client.post(
                 f"{self.base_url}/reset",
                 headers=self._headers(),
-                timeout=30.0,
+                timeout=120.0,
             )
         if r.status_code != 200:
             self._raise(r)
