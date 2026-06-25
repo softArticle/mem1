@@ -275,10 +275,16 @@ pub async fn search_memories(
     // Over-fetch a larger candidate pool when a reranker (LLM listwise) or MMR
     // (vector diversity) is active, re-sort it, then keep the top `req.limit`.
     // This lifts relevant-but-mid-ranked facts (the multi-hop failure mode) into
-    // the answer window. Without either, behaviour is unchanged.
+    // the answer window. Without either, behaviour is unchanged. The pool size is
+    // env-tunable: a larger pool gives MMR more scattered same-entity facts to pull
+    // into the answer window for multi-hop queries.
     let rerank_active = state.reranker.is_some() || mmr_lambda.is_some();
     let fetch_limit = if rerank_active {
-        req.limit.saturating_add(15).min(60)
+        let extra = std::env::var("MEM1_RERANK_POOL_EXTRA")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(30);
+        req.limit.saturating_add(extra).min(100)
     } else {
         req.limit
     };
