@@ -295,7 +295,13 @@ pub async fn search_memories(
     // MMR diversity rerank (pure vector math, no LLM) — prefer when configured.
     if let (Some(lambda), Some(qvec)) = (mmr_lambda, query_vec_for_mmr.as_ref()) {
         let embs: Vec<Option<Vec<f32>>> = rows.iter().map(|(m, _)| m.embedding.clone()).collect();
-        let order = crate::memory::mmr::mmr_order(qvec, &embs, lambda, req.limit as usize);
+        let order = crate::memory::mmr::mmr_order(
+            qvec,
+            &embs,
+            lambda,
+            req.limit as usize,
+            (req.limit / 2) as usize,
+        );
         let mut reordered: Vec<(Memory, Option<f32>)> = Vec::with_capacity(rows.len());
         let mut taken = vec![false; rows.len()];
         for idx in order {

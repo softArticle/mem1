@@ -45,24 +45,42 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// Return MMR-ordered indices into `embeddings` (0-based), selecting `k` items.
-/// `query` is the query embedding. Candidates without an embedding fall back to
-/// their original relative order, appended after the MMR-selected ones.
+/// `query` is the query embedding. The first `protect` candidates (the strongest
+/// by the upstream fused ranking) are kept in their original order at the front —
+/// this preserves precise top ranking for single-fact / temporal queries where the
+/// best answer is the most-relevant item — and MMR diversity selection only fills
+/// the remaining slots, surfacing distinct facts for multi-hop / set queries.
+/// Candidates without an embedding fall back to original order, appended last.
 pub fn mmr_order(
     query: &[f32],
     embeddings: &[Option<Vec<f32>>],
     lambda: f32,
     k: usize,
+    protect: usize,
 ) -> Vec<usize> {
     let n = embeddings.len();
     let mut selected: Vec<usize> = Vec::with_capacity(n.min(k));
-    let mut remaining: Vec<usize> = (0..n).filter(|&i| embeddings[i].is_some()).collect();
+    let mut chosen = vec![false; n];
+
+    // Protect the top `protect` fused-ranking candidates: keep them up front in
+    // their original order, so MMR never demotes the most-relevant answers.
+    for i in 0..protect.min(n) {
+        if embeddings[i].is_some() {
+            selected.push(i);
+            chosen[i] = true;
+        }
+    }
+
+    let mut remaining: Vec<usize> = (0..n)
+        .filter(|&i| embeddings[i].is_some() && !chosen[i])
+        .collect();
     // Precompute query relevance for each candidate.
     let rel: Vec<f32> = embeddings
         .iter()
         .map(|e| e.as_ref().map(|v| cosine(query, v)).unwrap_or(0.0))
         .collect();
 
-    let target = k.min(remaining.len());
+    let target = k.min(selected.len() + remaining.len());
     while selected.len() < target && !remaining.is_empty() {
         let mut best_pos = 0usize;
         let mut best_score = f32::NEG_INFINITY;
@@ -106,7 +124,7 @@ mod tests {
             Some(vec![1.0, 0.0]), // rel 1.0
             Some(vec![0.0, 1.0]), // rel 0.0
         ];
-        let order = mmr_order(&q, &embs, 1.0, 3);
+        let order = mmr_order(&q, &embs, 1.0, 3, 0);
         assert_eq!(order[0], 1); // highest relevance first
     }
 
@@ -120,7 +138,7 @@ mod tests {
             Some(vec![0.3, 0.95]),  // diverse, lower rel
         ];
         // low lambda → after picking [0], the diverse [2] should beat the near-dup [1].
-        let order = mmr_order(&q, &embs, 0.3, 2);
+        let order = mmr_order(&q, &embs, 0.3, 2, 0);
         assert_eq!(order[0], 0);
         assert_eq!(order[1], 2);
     }
@@ -129,7 +147,7 @@ mod tests {
     fn missing_embeddings_appended_last() {
         let q = vec![1.0, 0.0];
         let embs = vec![Some(vec![1.0, 0.0]), None, Some(vec![0.0, 1.0])];
-        let order = mmr_order(&q, &embs, 0.5, 3);
+        let order = mmr_order(&q, &embs, 0.5, 3, 0);
         assert_eq!(order.len(), 3);
         assert_eq!(*order.last().unwrap(), 1); // the None one is appended last
     }
