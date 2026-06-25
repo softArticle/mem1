@@ -270,10 +270,57 @@ pub async fn search_memories(
 
     let (user_id, filters) = filters_from_search(&req)?;
     let query_vec = state.embedder.embed_text(&req.query).await?;
-    let rows = state
+    let mmr_lambda = crate::memory::mmr::mmr_lambda_from_env();
+
+    // Over-fetch a larger candidate pool when a reranker (LLM listwise) or MMR
+    // (vector diversity) is active, re-sort it, then keep the top `req.limit`.
+    // This lifts relevant-but-mid-ranked facts (the multi-hop failure mode) into
+    // the answer window. Without either, behaviour is unchanged.
+    let rerank_active = state.reranker.is_some() || mmr_lambda.is_some();
+    let fetch_limit = if rerank_active {
+        req.limit.saturating_add(15).min(60)
+    } else {
+        req.limit
+    };
+    let query_vec_for_mmr = if mmr_lambda.is_some() {
+        query_vec.clone()
+    } else {
+        None
+    };
+    let mut rows = state
         .store
-        .search(&user_id, &req.query, query_vec, req.limit, &filters)
+        .search(&user_id, &req.query, query_vec, fetch_limit, &filters)
         .await?;
+
+    // MMR diversity rerank (pure vector math, no LLM) — prefer when configured.
+    if let (Some(lambda), Some(qvec)) = (mmr_lambda, query_vec_for_mmr.as_ref()) {
+        let embs: Vec<Option<Vec<f32>>> = rows.iter().map(|(m, _)| m.embedding.clone()).collect();
+        let order = crate::memory::mmr::mmr_order(qvec, &embs, lambda, req.limit as usize);
+        let mut reordered: Vec<(Memory, Option<f32>)> = Vec::with_capacity(rows.len());
+        let mut taken = vec![false; rows.len()];
+        for idx in order {
+            if idx < rows.len() && !taken[idx] {
+                taken[idx] = true;
+                reordered.push(rows[idx].clone());
+            }
+        }
+        rows = reordered;
+        rows.truncate(req.limit as usize);
+    } else if let Some(reranker) = &state.reranker {
+        let passages: Vec<String> = rows.iter().map(|(m, _)| m.content.clone()).collect();
+        let order = reranker.rerank(&req.query, &passages).await;
+        let mut reordered: Vec<(Memory, Option<f32>)> = Vec::with_capacity(rows.len());
+        let mut taken = vec![false; rows.len()];
+        for idx in order {
+            if idx < rows.len() && !taken[idx] {
+                taken[idx] = true;
+                reordered.push(rows[idx].clone());
+            }
+        }
+        rows = reordered;
+        rows.truncate(req.limit as usize);
+    }
+
     let formatted_context = Some(build_formatted_context(&rows));
     let results = rows
         .into_iter()
@@ -451,6 +498,7 @@ mod tests {
             store: storage::store(db),
             embedder: Embedder::Off,
             extractor: None,
+            reranker: None,
         });
         (db_path, state)
     }

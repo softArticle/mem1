@@ -27,7 +27,16 @@ async fn main() -> anyhow::Result<()> {
     if extractor.is_some() {
         tracing::info!("LLM fact extraction enabled (llm-v1)");
     }
-    let state = Arc::new(AppState { store, embedder, extractor });
+    let reranker = mem1_server::memory::rerank::LlmReranker::from_env();
+    if reranker.is_some() {
+        tracing::info!("LLM listwise reranker enabled (RankGPT-style)");
+    }
+    let state = Arc::new(AppState {
+        store,
+        embedder,
+        extractor,
+        reranker,
+    });
 
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
