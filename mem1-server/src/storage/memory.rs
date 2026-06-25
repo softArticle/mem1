@@ -806,6 +806,70 @@ impl SurrealMemoryStore {
             }
         }
 
+        // Multi-hop BFS over the entity-event graph (SAG-style). The 1-hop
+        // collection above only reaches memories sharing an entity with the query
+        // or a seed; multi-hop questions whose answer is scattered A->B->C need
+        // further traversal. Behind MEM1_GRAPH_HOPS (default 1 == no change): for
+        // each extra hop, take the memories gathered so far (the frontier), pull
+        // their entities, and find NEW memories linked to those entities, marking
+        // them seed_linked so they flow through the existing scorer. Bounded: skip
+        // already-processed entities and cap memories added per hop.
+        let graph_hops: u32 = std::env::var("MEM1_GRAPH_HOPS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(1)
+            .max(1);
+        if graph_hops > 1 {
+            let mut processed_entities: HashSet<String> = entity_ids.iter().cloned().collect();
+            // Bound the frontier to the strongest candidates per hop (like the 1-hop
+            // seed cap) so traversal stays cheap — expanding from every candidate is
+            // O(candidates x entities) DB queries and explodes on dense graphs.
+            let mut frontier: Vec<String> =
+                candidate_ids.iter().take(MAX_GRAPH_SEEDS).cloned().collect();
+            for _ in 1..graph_hops {
+                if frontier.is_empty() {
+                    break;
+                }
+                let mut hop_entities: Vec<String> = Vec::new();
+                for memory_id in &frontier {
+                    for entity_id in self.entity_ids_for_memory(user_id, memory_id).await? {
+                        if processed_entities.insert(entity_id.clone()) {
+                            hop_entities.push(entity_id);
+                        }
+                    }
+                }
+                let mut next_frontier: Vec<String> = Vec::new();
+                for entity_id in hop_entities {
+                    let mut response = self
+                        .0
+                        .query(
+                            "SELECT * FROM memory_entities \
+                             WHERE user_id = $user_id AND entity_id = $entity_id \
+                             ORDER BY created_at DESC LIMIT $limit",
+                        )
+                        .bind(("user_id", user_id.to_string()))
+                        .bind(("entity_id", entity_id.clone()))
+                        .bind(("limit", per_entity))
+                        .await
+                        .map_err(|e| {
+                            Error::Storage(anyhow::anyhow!("surrealdb graph hop query: {e}"))
+                        })?;
+                    let rows: Vec<MemoryEntityRecord> = response.take(0).map_err(|e| {
+                        Error::Storage(anyhow::anyhow!("surrealdb graph hop take: {e}"))
+                    })?;
+                    for row in rows {
+                        if seen_candidate.insert(row.memory_id.clone()) {
+                            seed_linked.insert(row.memory_id.clone());
+                            candidate_ids.push(row.memory_id.clone());
+                            next_frontier.push(row.memory_id);
+                        }
+                    }
+                }
+                next_frontier.truncate(MAX_GRAPH_SEEDS);
+                frontier = next_frontier;
+            }
+        }
+
         // Entity extraction only recognizes capitalized proper nouns, so a question
         // like "what country is Caroline's grandma from" never links to the memory
         // "...grandma in my home country, Sweden" via entities alone. Widen the

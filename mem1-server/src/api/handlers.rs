@@ -318,6 +318,39 @@ pub async fn search_memories(
         }
         rows = reordered;
         rows.truncate(req.limit as usize);
+
+        // Optional lexical re-scoring pass (SAG localScoreRerank fallback, zero-LLM).
+        // Behind MEM1_LEXICAL_BOOST=1; default unset = no change. Stable-sorts the
+        // post-MMR rows by descending count of distinct query content-terms found as
+        // substrings, ties preserving MMR order.
+        if std::env::var("MEM1_LEXICAL_BOOST").as_deref() == Ok("1") {
+            const STOPWORDS: &[&str] = &[
+                "the", "and", "what", "when", "where", "who", "how", "why", "which",
+                "for", "are", "was", "were", "with", "this", "that", "from", "has",
+                "have", "had", "you", "your", "did", "does", "into", "about",
+            ];
+            let terms: Vec<String> = req
+                .query
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|t| t.len() >= 3)
+                .map(|t| t.to_lowercase())
+                .filter(|t| !STOPWORDS.contains(&t.as_str()))
+                .collect();
+            if !terms.is_empty() {
+                let scored: Vec<usize> = rows
+                    .iter()
+                    .map(|(m, _)| {
+                        let content = m.content.to_lowercase();
+                        terms.iter().filter(|t| content.contains(t.as_str())).count()
+                    })
+                    .collect();
+                let mut idx: Vec<usize> = (0..rows.len()).collect();
+                idx.sort_by(|&a, &b| scored[b].cmp(&scored[a]));
+                let reordered2: Vec<(Memory, Option<f32>)> =
+                    idx.into_iter().map(|i| rows[i].clone()).collect();
+                rows = reordered2;
+            }
+        }
     } else if let Some(reranker) = &state.reranker {
         let passages: Vec<String> = rows.iter().map(|(m, _)| m.content.clone()).collect();
         let order = reranker.rerank(&req.query, &passages).await;
