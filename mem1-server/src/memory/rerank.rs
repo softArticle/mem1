@@ -14,16 +14,46 @@
 //! transport/parse failure the original order is returned unchanged.
 
 pub struct LlmReranker {
+    provider: RerankProvider,
     api_key: String,
     base_url: String,
     model: String,
     client: reqwest::Client,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum RerankProvider {
+    /// RankGPT-style listwise permutation via an OpenAI-compatible chat endpoint.
+    OpenAiListwise,
+    /// Local cross-encoder (sentence-transformers) via a /rerank endpoint that
+    /// returns {results:[{index, relevance_score}]}. Fast (~40ms/45 docs), no LLM.
+    CrossEncoder,
+}
+
 impl LlmReranker {
     pub fn from_env() -> Option<Self> {
-        if std::env::var("MEM1_RERANK_PROVIDER").unwrap_or_default() != "openai" {
-            return None;
+        let provider = match std::env::var("MEM1_RERANK_PROVIDER").unwrap_or_default().as_str() {
+            "openai" => RerankProvider::OpenAiListwise,
+            "crossencoder" => RerankProvider::CrossEncoder,
+            _ => return None,
+        };
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(90))
+            .build()
+            .ok()?;
+        if provider == RerankProvider::CrossEncoder {
+            // Local cross-encoder service; no auth, default endpoint.
+            let base_url = std::env::var("MEM1_RERANK_BASE_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:8091".to_string())
+                .trim_end_matches('/')
+                .to_string();
+            return Some(Self {
+                provider,
+                api_key: String::new(),
+                base_url,
+                model: String::new(),
+                client,
+            });
         }
         let api_key = std::env::var("MEM1_RERANK_API_KEY")
             .or_else(|_| std::env::var("MEM1_EXTRACT_API_KEY"))
@@ -38,11 +68,8 @@ impl LlmReranker {
         let model = std::env::var("MEM1_RERANK_MODEL")
             .or_else(|_| std::env::var("MEM1_EXTRACT_MODEL"))
             .unwrap_or_else(|_| "gpt-4o-mini".to_string());
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(90))
-            .build()
-            .ok()?;
         Some(Self {
+            provider,
             api_key,
             base_url,
             model,
@@ -50,15 +77,79 @@ impl LlmReranker {
         })
     }
 
-    /// Reorder `passages` (content strings) by listwise LLM relevance to `query`.
-    /// Returns a permutation of indices into `passages` (0-based). On failure,
-    /// returns the identity order so the caller can keep the fused ranking.
+    /// Reorder `passages` (content strings) by relevance to `query`. Returns a
+    /// permutation of indices into `passages` (0-based). On failure, returns the
+    /// identity order so the caller keeps the fused ranking.
     pub async fn rerank(&self, query: &str, passages: &[String]) -> Vec<usize> {
         let n = passages.len();
         let identity: Vec<usize> = (0..n).collect();
         if n <= 1 {
             return identity;
         }
+        match self.provider {
+            RerankProvider::CrossEncoder => self.rerank_crossencoder(query, passages).await,
+            RerankProvider::OpenAiListwise => self.rerank_listwise(query, passages).await,
+        }
+    }
+
+    /// Local cross-encoder rerank: POST {query, documents, top_n} -> sorted indices.
+    async fn rerank_crossencoder(&self, query: &str, passages: &[String]) -> Vec<usize> {
+        let n = passages.len();
+        let identity: Vec<usize> = (0..n).collect();
+        let body = serde_json::json!({
+            "query": query,
+            "documents": passages,
+            "top_n": n,
+        });
+        let resp = match self
+            .client
+            .post(format!("{}/rerank", self.base_url))
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => r,
+            Ok(r) => {
+                tracing::warn!(status = %r.status(), "crossencoder rerank: non-200, keeping order");
+                return identity;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "crossencoder rerank: request failed, keeping order");
+                return identity;
+            }
+        };
+        let data: serde_json::Value = match resp.json().await {
+            Ok(v) => v,
+            Err(_) => return identity,
+        };
+        let mut order: Vec<usize> = Vec::with_capacity(n);
+        let mut seen = vec![false; n];
+        if let Some(arr) = data.get("results").and_then(|r| r.as_array()) {
+            for item in arr {
+                if let Some(idx) = item.get("index").and_then(|i| i.as_u64()) {
+                    let idx = idx as usize;
+                    if idx < n && !seen[idx] {
+                        seen[idx] = true;
+                        order.push(idx);
+                    }
+                }
+            }
+        }
+        if order.is_empty() {
+            return identity;
+        }
+        for (i, was) in seen.iter().enumerate() {
+            if !was {
+                order.push(i);
+            }
+        }
+        order
+    }
+
+    /// Reorder via RankGPT-style listwise permutation (OpenAI-compatible chat).
+    async fn rerank_listwise(&self, query: &str, passages: &[String]) -> Vec<usize> {
+        let n = passages.len();
+        let identity: Vec<usize> = (0..n).collect();
         let prompt = build_rank_prompt(query, passages);
         let body = serde_json::json!({
             "model": self.model,
