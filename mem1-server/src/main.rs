@@ -31,6 +31,22 @@ async fn main() -> anyhow::Result<()> {
     if reranker.is_some() {
         tracing::info!("LLM listwise reranker enabled (RankGPT-style)");
     }
+
+    #[cfg(feature = "local-embed")]
+    let state = {
+        let cross_encoder = mem1_server::memory::local_rerank::LocalCrossEncoder::from_env();
+        if cross_encoder.is_some() {
+            tracing::info!("embedded cross-encoder reranker enabled (tract, in-process)");
+        }
+        Arc::new(AppState {
+            store,
+            embedder,
+            extractor,
+            reranker,
+            cross_encoder,
+        })
+    };
+    #[cfg(not(feature = "local-embed"))]
     let state = Arc::new(AppState {
         store,
         embedder,

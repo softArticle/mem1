@@ -8,4 +8,8 @@ pub struct AppState {
     pub embedder: Embedder,
     pub extractor: Option<LlmExtractor>,
     pub reranker: Option<LlmReranker>,
+    /// Embedded cross-encoder reranker (tract, in-process). Takes precedence over
+    /// the HTTP/LLM `reranker` when present.
+    #[cfg(feature = "local-embed")]
+    pub cross_encoder: Option<crate::memory::local_rerank::LocalCrossEncoder>,
 }

@@ -278,7 +278,11 @@ pub async fn search_memories(
     // the answer window. Without either, behaviour is unchanged. The pool size is
     // env-tunable: a larger pool gives MMR more scattered same-entity facts to pull
     // into the answer window for multi-hop queries.
-    let rerank_active = state.reranker.is_some() || mmr_lambda.is_some();
+    #[cfg(feature = "local-embed")]
+    let ce_active = state.cross_encoder.is_some();
+    #[cfg(not(feature = "local-embed"))]
+    let ce_active = false;
+    let rerank_active = state.reranker.is_some() || mmr_lambda.is_some() || ce_active;
     let fetch_limit = if rerank_active {
         let extra = std::env::var("MEM1_RERANK_POOL_EXTRA")
             .ok()
@@ -298,8 +302,34 @@ pub async fn search_memories(
         .search(&user_id, &req.query, query_vec, fetch_limit, &filters)
         .await?;
 
+    // Embedded cross-encoder rerank (tract, in-process) takes precedence when
+    // loaded: it scores each (query, passage) pair directly. Falls through to MMR
+    // / HTTP reranker otherwise.
+    #[cfg(feature = "local-embed")]
+    let ce_done = if let Some(ce) = &state.cross_encoder {
+        let passages: Vec<String> = rows.iter().map(|(m, _)| m.content.clone()).collect();
+        let order = ce.rerank(&req.query, &passages);
+        let mut reordered: Vec<(Memory, Option<f32>)> = Vec::with_capacity(rows.len());
+        let mut taken = vec![false; rows.len()];
+        for idx in order {
+            if idx < rows.len() && !taken[idx] {
+                taken[idx] = true;
+                reordered.push(rows[idx].clone());
+            }
+        }
+        rows = reordered;
+        rows.truncate(req.limit as usize);
+        true
+    } else {
+        false
+    };
+    #[cfg(not(feature = "local-embed"))]
+    let ce_done = false;
+
     // MMR diversity rerank (pure vector math, no LLM) — prefer when configured.
-    if let (Some(lambda), Some(qvec)) = (mmr_lambda, query_vec_for_mmr.as_ref()) {
+    if ce_done {
+        // already reranked by the embedded cross-encoder
+    } else if let (Some(lambda), Some(qvec)) = (mmr_lambda, query_vec_for_mmr.as_ref()) {
         let embs: Vec<Option<Vec<f32>>> = rows.iter().map(|(m, _)| m.embedding.clone()).collect();
         let order = crate::memory::mmr::mmr_order(
             qvec,
@@ -544,6 +574,8 @@ mod tests {
             embedder: Embedder::Off,
             extractor: None,
             reranker: None,
+            #[cfg(feature = "local-embed")]
+            cross_encoder: None,
         });
         (db_path, state)
     }
