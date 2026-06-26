@@ -25,6 +25,9 @@ pub struct LocalCrossEncoder {
     model: Mutex<TractRunnable>,
     tokenizer: Tokenizer,
     max_length: usize,
+    /// Number of model inputs: 3 = BERT (input_ids/attention_mask/token_type_ids),
+    /// 2 = RoBERTa-family (no segment ids, e.g. bge-reranker-base).
+    n_inputs: usize,
 }
 
 impl LocalCrossEncoder {
@@ -57,15 +60,21 @@ impl LocalCrossEncoder {
         }
         let max_length = max_length.unwrap_or(DEFAULT_MAX_LENGTH);
 
-        let model = tract_onnx::onnx()
+        // Detect input arity from the raw ONNX before fixing facts: BERT cross-encoders
+        // take 3 inputs (input_ids/attention_mask/token_type_ids), RoBERTa-family (bge)
+        // take 2 (no segment ids).
+        let raw = tract_onnx::onnx()
             .model_for_path(&model_path)
-            .map_err(|e| Error::Embedding(format!("tract rerank load: {e}")))?
-            .with_input_fact(0, InferenceFact::dt_shape(i64::datum_type(), tvec!(1, max_length)))
-            .map_err(|e| Error::Embedding(format!("rerank input_ids fact: {e}")))?
-            .with_input_fact(1, InferenceFact::dt_shape(i64::datum_type(), tvec!(1, max_length)))
-            .map_err(|e| Error::Embedding(format!("rerank attention_mask fact: {e}")))?
-            .with_input_fact(2, InferenceFact::dt_shape(i64::datum_type(), tvec!(1, max_length)))
-            .map_err(|e| Error::Embedding(format!("rerank token_type_ids fact: {e}")))?
+            .map_err(|e| Error::Embedding(format!("tract rerank load: {e}")))?;
+        let n_inputs = raw.input_outlets().map(|o| o.len()).unwrap_or(3);
+
+        let mut model = raw;
+        for i in 0..n_inputs {
+            model = model
+                .with_input_fact(i, InferenceFact::dt_shape(i64::datum_type(), tvec!(1, max_length)))
+                .map_err(|e| Error::Embedding(format!("rerank input {i} fact: {e}")))?;
+        }
+        let model = model
             .into_optimized()
             .map_err(|e| Error::Embedding(format!("rerank optimize: {e}")))?
             .into_runnable()
@@ -78,6 +87,7 @@ impl LocalCrossEncoder {
             model: Mutex::new(model),
             tokenizer,
             max_length,
+            n_inputs,
         })
     }
 
@@ -102,16 +112,23 @@ impl LocalCrossEncoder {
         let attention_mask = tract_ndarray::Array::from_shape_vec((1, seq), mask)
             .map_err(|e| Error::Embedding(format!("rerank attn tensor: {e}")))?
             .into_tensor();
-        let token_type_ids = tract_ndarray::Array::from_shape_vec((1, seq), types)
-            .map_err(|e| Error::Embedding(format!("rerank tt tensor: {e}")))?
-            .into_tensor();
 
         let guard = self
             .model
             .lock()
             .map_err(|e| Error::Embedding(format!("rerank lock: {e}")))?;
+        // BERT cross-encoders take 3 inputs (with token_type_ids); RoBERTa-family
+        // (bge-reranker-base) take 2.
+        let inputs: TVec<TValue> = if self.n_inputs >= 3 {
+            let token_type_ids = tract_ndarray::Array::from_shape_vec((1, seq), types)
+                .map_err(|e| Error::Embedding(format!("rerank tt tensor: {e}")))?
+                .into_tensor();
+            tvec!(input_ids.into(), attention_mask.into(), token_type_ids.into())
+        } else {
+            tvec!(input_ids.into(), attention_mask.into())
+        };
         let outputs = guard
-            .run(tvec!(input_ids.into(), attention_mask.into(), token_type_ids.into()))
+            .run(inputs)
             .map_err(|e| Error::Embedding(format!("rerank run: {e}")))?;
         let logits = outputs
             .first()
@@ -155,6 +172,25 @@ mod tests {
         for (i, d) in docs.iter().enumerate() {
             println!("  score[{}]={:.3}  {}", i, ce.score(q, d).unwrap(), d);
         }
+        assert_eq!(order[0], 1, "camping doc should rank first");
+    }
+
+    // Loads bge-reranker-base (1GB XLM-RoBERTa, 2-input) to validate tract load
+    // time + arity auto-detect. Run: cargo test --release bge_loads -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn bge_loads_and_ranks() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("rerank_model_bge");
+        let ce = LocalCrossEncoder::load(&dir, None).expect("load bge-reranker-base");
+        println!("n_inputs = {}", ce.n_inputs);
+        let q = "Where has Melanie camped?";
+        let docs = vec![
+            "Caroline likes tea".to_string(),
+            "Melanie camped at the beach, mountains and forest".to_string(),
+            "It was a sunny day".to_string(),
+        ];
+        let order = ce.rerank(q, &docs);
+        println!("order: {:?}", order);
         assert_eq!(order[0], 1, "camping doc should rank first");
     }
 }
