@@ -3,8 +3,6 @@
 use axum::{routing::get, routing::post, Router};
 use mem1_server::api::{handlers, middleware};
 use mem1_server::app_state::AppState;
-use mem1_server::memory::embedding::Embedder;
-use mem1_server::storage;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
@@ -18,47 +16,7 @@ async fn main() -> anyhow::Result<()> {
     let bind = std::env::var("MEM1_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let addr: SocketAddr = bind.parse()?;
 
-    let db_path = std::env::var("MEM1_DB_PATH").unwrap_or_else(|_| "mem1.db".to_string());
-    let db = storage::connect(&db_path).await?;
-    storage::ensure_schema(&db).await?;
-    let store = storage::store(db);
-    let embedder = Embedder::from_env()?;
-    let extractor = mem1_server::memory::llm_extract::LlmExtractor::from_env();
-    if extractor.is_some() {
-        tracing::info!("LLM fact extraction enabled (llm-v1)");
-    }
-    let reranker = mem1_server::memory::rerank::LlmReranker::from_env();
-    if reranker.is_some() {
-        tracing::info!("LLM listwise reranker enabled (RankGPT-style)");
-    }
-    let query_rewriter = mem1_server::memory::query_rewrite::QueryRewriter::from_env();
-    if query_rewriter.is_some() {
-        tracing::info!("LLM multi-query rewriter enabled");
-    }
-
-    #[cfg(feature = "local-embed")]
-    let state = {
-        let cross_encoder = mem1_server::memory::local_rerank::LocalCrossEncoder::from_env();
-        if cross_encoder.is_some() {
-            tracing::info!("embedded cross-encoder reranker enabled (tract, in-process)");
-        }
-        Arc::new(AppState {
-            store,
-            embedder,
-            extractor,
-            reranker,
-            query_rewriter,
-            cross_encoder,
-        })
-    };
-    #[cfg(not(feature = "local-embed"))]
-    let state = Arc::new(AppState {
-        store,
-        embedder,
-        extractor,
-        reranker,
-        query_rewriter,
-    });
+    let state = Arc::new(AppState::from_env().await?);
 
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))

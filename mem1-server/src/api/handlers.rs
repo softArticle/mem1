@@ -43,8 +43,14 @@ fn rrf_merge_runs(
             return by_score;
         }
         // Tie-break: newer first (consistent with in-store rrf_merge).
-        let ca = memories.get(&a.0).map(|m| m.created_at.as_str()).unwrap_or("");
-        let cb = memories.get(&b.0).map(|m| m.created_at.as_str()).unwrap_or("");
+        let ca = memories
+            .get(&a.0)
+            .map(|m| m.created_at.as_str())
+            .unwrap_or("");
+        let cb = memories
+            .get(&b.0)
+            .map(|m| m.created_at.as_str())
+            .unwrap_or("");
         cb.cmp(ca)
     });
     out.into_iter()
@@ -224,6 +230,13 @@ pub async fn add_memory(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AddMemoryRequest>,
 ) -> Result<(StatusCode, Json<AddResponse>), Error> {
+    let out = add_memory_svc(&state, req).await?;
+    Ok((StatusCode::CREATED, Json(out)))
+}
+
+/// Transport-agnostic add: extraction → embed → store. Shared by the HTTP
+/// handler and the MCP tool so both write identical memories.
+pub async fn add_memory_svc(state: &AppState, req: AddMemoryRequest) -> Result<AddResponse, Error> {
     let (user_id, sources, metadata) = match req {
         AddMemoryRequest::ByContent {
             user_id,
@@ -293,14 +306,23 @@ pub async fn add_memory(
         results.push(memory_to_result(state.store.add(&memory).await?, None));
     }
 
-    let out = AddResponse { results };
-    Ok((StatusCode::CREATED, Json(out)))
+    Ok(AddResponse { results })
 }
 
 pub async fn search_memories(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SearchRequest>,
 ) -> Result<Json<SearchResponse>, Error> {
+    Ok(Json(search_memories_svc(&state, req).await?))
+}
+
+/// Transport-agnostic search: embed → optional multi-query rewrite → RRF →
+/// rerank (cross-encoder / MMR / listwise) → formatted context. Shared by the
+/// HTTP handler and the MCP tool.
+pub async fn search_memories_svc(
+    state: &AppState,
+    req: SearchRequest,
+) -> Result<SearchResponse, Error> {
     if req.query.trim().is_empty() {
         return Err(Error::InvalidInput("query is required".to_string()));
     }
@@ -423,9 +445,9 @@ pub async fn search_memories(
         // substrings, ties preserving MMR order.
         if std::env::var("MEM1_LEXICAL_BOOST").as_deref() == Ok("1") {
             const STOPWORDS: &[&str] = &[
-                "the", "and", "what", "when", "where", "who", "how", "why", "which",
-                "for", "are", "was", "were", "with", "this", "that", "from", "has",
-                "have", "had", "you", "your", "did", "does", "into", "about",
+                "the", "and", "what", "when", "where", "who", "how", "why", "which", "for", "are",
+                "was", "were", "with", "this", "that", "from", "has", "have", "had", "you", "your",
+                "did", "does", "into", "about",
             ];
             let terms: Vec<String> = req
                 .query
@@ -439,7 +461,10 @@ pub async fn search_memories(
                     .iter()
                     .map(|(m, _)| {
                         let content = m.content.to_lowercase();
-                        terms.iter().filter(|t| content.contains(t.as_str())).count()
+                        terms
+                            .iter()
+                            .filter(|t| content.contains(t.as_str()))
+                            .count()
                     })
                     .collect();
                 let mut idx: Vec<usize> = (0..rows.len()).collect();
@@ -470,16 +495,23 @@ pub async fn search_memories(
         .map(|(m, score)| memory_to_result(m, score))
         .collect();
 
-    Ok(Json(SearchResponse {
+    Ok(SearchResponse {
         results,
         formatted_context,
-    }))
+    })
 }
 
 pub async fn list_memories(
     State(state): State<Arc<AppState>>,
     Query(q): Query<ListMemoriesQuery>,
 ) -> Result<Json<AddResponse>, Error> {
+    Ok(Json(list_memories_svc(&state, q).await?))
+}
+
+pub async fn list_memories_svc(
+    state: &AppState,
+    q: ListMemoriesQuery,
+) -> Result<AddResponse, Error> {
     if q.user_id.trim().is_empty() {
         return Err(Error::InvalidInput("user_id is required".to_string()));
     }
@@ -494,7 +526,7 @@ pub async fn list_memories(
         .map(|m| memory_to_result(m, None))
         .collect();
 
-    Ok(Json(AddResponse { results }))
+    Ok(AddResponse { results })
 }
 
 pub async fn get_memory(
@@ -502,13 +534,20 @@ pub async fn get_memory(
     Path(id): Path<String>,
     Query(q): Query<UserScopeQuery>,
 ) -> Result<Json<MemoryResult>, Error> {
-    if q.user_id.trim().is_empty() {
+    Ok(Json(get_memory_svc(&state, &id, &q.user_id).await?))
+}
+
+pub async fn get_memory_svc(
+    state: &AppState,
+    id: &str,
+    user_id: &str,
+) -> Result<MemoryResult, Error> {
+    if user_id.trim().is_empty() {
         return Err(Error::InvalidInput("user_id is required".to_string()));
     }
-    let memory = state.store.get(&id, &q.user_id).await?;
+    let memory = state.store.get(id, user_id).await?;
     let memory = memory.ok_or(Error::NotFound)?;
-
-    Ok(Json(memory_to_result(memory, None)))
+    Ok(memory_to_result(memory, None))
 }
 
 pub async fn update_memory(
@@ -516,6 +555,14 @@ pub async fn update_memory(
     Path(id): Path<String>,
     Json(req): Json<UpdateMemoryRequest>,
 ) -> Result<Json<MemoryResult>, Error> {
+    Ok(Json(update_memory_svc(&state, &id, req).await?))
+}
+
+pub async fn update_memory_svc(
+    state: &AppState,
+    id: &str,
+    req: UpdateMemoryRequest,
+) -> Result<MemoryResult, Error> {
     if req.user_id.trim().is_empty() {
         return Err(Error::InvalidInput("user_id is required".to_string()));
     }
@@ -537,7 +584,7 @@ pub async fn update_memory(
     let updated = state
         .store
         .update(
-            &id,
+            id,
             &req.user_id,
             content,
             embedding,
@@ -549,7 +596,7 @@ pub async fn update_memory(
         )
         .await?;
     let updated = updated.ok_or(Error::NotFound)?;
-    Ok(Json(memory_to_result(updated, None)))
+    Ok(memory_to_result(updated, None))
 }
 
 pub async fn delete_memory(
@@ -557,26 +604,38 @@ pub async fn delete_memory(
     Path(id): Path<String>,
     Query(q): Query<UserScopeQuery>,
 ) -> Result<StatusCode, Error> {
-    if q.user_id.trim().is_empty() {
+    delete_memory_svc(&state, &id, &q.user_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn delete_memory_svc(state: &AppState, id: &str, user_id: &str) -> Result<(), Error> {
+    if user_id.trim().is_empty() {
         return Err(Error::InvalidInput("user_id is required".to_string()));
     }
-    let ok = state.store.delete(&id, &q.user_id).await?;
+    let ok = state.store.delete(id, user_id).await?;
     if !ok {
         return Err(Error::NotFound);
     }
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }
 
 pub async fn delete_all_memories(
     State(state): State<Arc<AppState>>,
     Query(q): Query<ListMemoriesQuery>,
 ) -> Result<Json<DeleteAllResponse>, Error> {
+    Ok(Json(delete_all_memories_svc(&state, q).await?))
+}
+
+pub async fn delete_all_memories_svc(
+    state: &AppState,
+    q: ListMemoriesQuery,
+) -> Result<DeleteAllResponse, Error> {
     if q.user_id.trim().is_empty() {
         return Err(Error::InvalidInput("user_id is required".to_string()));
     }
     let filters = filters_from_query(&q);
     let deleted = state.store.delete_all(&q.user_id, &filters).await?;
-    Ok(Json(DeleteAllResponse { deleted }))
+    Ok(DeleteAllResponse { deleted })
 }
 
 pub async fn memory_history(
@@ -584,10 +643,18 @@ pub async fn memory_history(
     Path(id): Path<String>,
     Query(q): Query<UserScopeQuery>,
 ) -> Result<Json<HistoryResponse>, Error> {
-    if q.user_id.trim().is_empty() {
+    Ok(Json(memory_history_svc(&state, &id, &q.user_id).await?))
+}
+
+pub async fn memory_history_svc(
+    state: &AppState,
+    id: &str,
+    user_id: &str,
+) -> Result<HistoryResponse, Error> {
+    if user_id.trim().is_empty() {
         return Err(Error::InvalidInput("user_id is required".to_string()));
     }
-    let rows = state.store.history(&id, &q.user_id).await?;
+    let rows = state.store.history(id, user_id).await?;
     let results = rows
         .into_iter()
         .map(|h| MemoryHistoryResult {
@@ -600,19 +667,27 @@ pub async fn memory_history(
             created_at: h.created_at,
         })
         .collect();
-    Ok(Json(HistoryResponse { results }))
+    Ok(HistoryResponse { results })
 }
 
 pub async fn list_users(State(state): State<Arc<AppState>>) -> Result<Json<UsersResponse>, Error> {
+    Ok(Json(list_users_svc(&state).await?))
+}
+
+pub async fn list_users_svc(state: &AppState) -> Result<UsersResponse, Error> {
     let users = state.store.list_users().await?;
-    Ok(Json(UsersResponse { users }))
+    Ok(UsersResponse { users })
 }
 
 pub async fn reset_memories(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<DeleteAllResponse>, Error> {
+    Ok(Json(reset_memories_svc(&state).await?))
+}
+
+pub async fn reset_memories_svc(state: &AppState) -> Result<DeleteAllResponse, Error> {
     let deleted = state.store.reset().await?;
-    Ok(Json(DeleteAllResponse { deleted }))
+    Ok(DeleteAllResponse { deleted })
 }
 
 #[cfg(test)]

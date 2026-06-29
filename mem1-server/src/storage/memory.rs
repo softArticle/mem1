@@ -824,8 +824,11 @@ impl SurrealMemoryStore {
             // Bound the frontier to the strongest candidates per hop (like the 1-hop
             // seed cap) so traversal stays cheap — expanding from every candidate is
             // O(candidates x entities) DB queries and explodes on dense graphs.
-            let mut frontier: Vec<String> =
-                candidate_ids.iter().take(MAX_GRAPH_SEEDS).cloned().collect();
+            let mut frontier: Vec<String> = candidate_ids
+                .iter()
+                .take(MAX_GRAPH_SEEDS)
+                .cloned()
+                .collect();
             for _ in 1..graph_hops {
                 if frontier.is_empty() {
                     break;
@@ -897,12 +900,10 @@ impl SurrealMemoryStore {
                 .bind(("term", term.clone()))
                 .bind(("limit", per_entity))
                 .await
-                .map_err(|e| {
-                    Error::Storage(anyhow::anyhow!("surrealdb graph term query: {e}"))
-                })?;
-            let rows: Vec<IdRow> = response.take(0).map_err(|e| {
-                Error::Storage(anyhow::anyhow!("surrealdb graph term take: {e}"))
-            })?;
+                .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb graph term query: {e}")))?;
+            let rows: Vec<IdRow> = response
+                .take(0)
+                .map_err(|e| Error::Storage(anyhow::anyhow!("surrealdb graph term take: {e}")))?;
             for row in rows {
                 let mid = record_id_to_string(&row.id, "");
                 if mid.is_empty() {

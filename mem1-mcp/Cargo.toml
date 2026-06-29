@@ -1,0 +1,20 @@
+[package]
+name = "mem1-mcp"
+version.workspace = true
+edition.workspace = true
+description = "MCP (Model Context Protocol) stdio server for mem1 — embeds the mem1 store in-process and exposes memory tools to Claude Code, Codex, OpenCode, Pi, and other MCP clients."
+
+[[bin]]
+name = "mem1-mcp"
+path = "src/main.rs"
+
+[dependencies]
+mem1-server = { path = "../mem1-server" }
+rmcp = { version = "1.8", features = ["server", "macros", "transport-io"] }
+schemars = "1"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

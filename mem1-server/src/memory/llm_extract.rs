@@ -40,7 +40,8 @@ impl LlmExtractor {
             .ok()?
             .trim_end_matches('/')
             .to_string();
-        let model = std::env::var("MEM1_EXTRACT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+        let model =
+            std::env::var("MEM1_EXTRACT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
         // Bound each extraction call: a slow turn degrades to rule-based extraction
         // rather than stalling the whole add pipeline (mem0 lesson: match timeouts
         // to reality and keep auxiliary enrichment fail-open).
@@ -187,7 +188,10 @@ fn parse_facts(content: &str) -> Vec<String> {
 
 fn strip_code_fences(s: &str) -> &str {
     let s = s.trim();
-    let s = s.strip_prefix("```json").or_else(|| s.strip_prefix("```")).unwrap_or(s);
+    let s = s
+        .strip_prefix("```json")
+        .or_else(|| s.strip_prefix("```"))
+        .unwrap_or(s);
     s.strip_suffix("```").unwrap_or(s).trim()
 }
 
@@ -234,7 +238,10 @@ mod tests {
     #[test]
     fn falls_back_to_line_list() {
         let out = parse_facts("- Caroline moved from Sweden\n- She has a necklace");
-        assert_eq!(out, vec!["Caroline moved from Sweden", "She has a necklace"]);
+        assert_eq!(
+            out,
+            vec!["Caroline moved from Sweden", "She has a necklace"]
+        );
     }
 
     #[test]

@@ -39,7 +39,8 @@ impl LocalCrossEncoder {
         if std::env::var("MEM1_RERANK_PROVIDER").unwrap_or_default() != "crossencoder" {
             return None;
         }
-        let dir = std::env::var("MEM1_RERANK_MODEL_DIR").unwrap_or_else(|_| "rerank_model".to_string());
+        let dir =
+            std::env::var("MEM1_RERANK_MODEL_DIR").unwrap_or_else(|_| "rerank_model".to_string());
         match Self::load(Path::new(&dir), None) {
             Ok(ce) => Some(ce),
             Err(e) => {
@@ -71,7 +72,10 @@ impl LocalCrossEncoder {
         let mut model = raw;
         for i in 0..n_inputs {
             model = model
-                .with_input_fact(i, InferenceFact::dt_shape(i64::datum_type(), tvec!(1, max_length)))
+                .with_input_fact(
+                    i,
+                    InferenceFact::dt_shape(i64::datum_type(), tvec!(1, max_length)),
+                )
                 .map_err(|e| Error::Embedding(format!("rerank input {i} fact: {e}")))?;
         }
         let model = model
@@ -99,11 +103,30 @@ impl LocalCrossEncoder {
             .map_err(|e| Error::Embedding(format!("rerank tokenize: {e}")))?;
 
         let take = self.max_length;
-        let mut ids: Vec<i64> = encoding.get_ids().iter().take(take).map(|&u| u as i64).collect();
-        let mut mask: Vec<i64> = encoding.get_attention_mask().iter().take(take).map(|&u| u as i64).collect();
-        let mut types: Vec<i64> = encoding.get_type_ids().iter().take(take).map(|&u| u as i64).collect();
+        let mut ids: Vec<i64> = encoding
+            .get_ids()
+            .iter()
+            .take(take)
+            .map(|&u| u as i64)
+            .collect();
+        let mut mask: Vec<i64> = encoding
+            .get_attention_mask()
+            .iter()
+            .take(take)
+            .map(|&u| u as i64)
+            .collect();
+        let mut types: Vec<i64> = encoding
+            .get_type_ids()
+            .iter()
+            .take(take)
+            .map(|&u| u as i64)
+            .collect();
         // Pad right to max_length (matches the fixed input fact shape).
-        while ids.len() < take { ids.push(0); mask.push(0); types.push(0); }
+        while ids.len() < take {
+            ids.push(0);
+            mask.push(0);
+            types.push(0);
+        }
 
         let seq = take;
         let input_ids = tract_ndarray::Array::from_shape_vec((1, seq), ids)
@@ -123,7 +146,11 @@ impl LocalCrossEncoder {
             let token_type_ids = tract_ndarray::Array::from_shape_vec((1, seq), types)
                 .map_err(|e| Error::Embedding(format!("rerank tt tensor: {e}")))?
                 .into_tensor();
-            tvec!(input_ids.into(), attention_mask.into(), token_type_ids.into())
+            tvec!(
+                input_ids.into(),
+                attention_mask.into(),
+                token_type_ids.into()
+            )
         } else {
             tvec!(input_ids.into(), attention_mask.into())
         };

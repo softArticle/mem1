@@ -158,7 +158,9 @@ fn parse_queries(content: &str) -> Vec<String> {
         .map(|l| {
             // strip a leading "1. " / "2) " enumerator
             match l.find(['.', ')']) {
-                Some(i) if i <= 2 && l[..i].chars().all(|c| c.is_ascii_digit()) => l[i + 1..].trim(),
+                Some(i) if i <= 2 && l[..i].chars().all(|c| c.is_ascii_digit()) => {
+                    l[i + 1..].trim()
+                }
                 _ => l,
             }
         })
@@ -169,7 +171,10 @@ fn parse_queries(content: &str) -> Vec<String> {
 
 fn strip_code_fences(s: &str) -> &str {
     let s = s.trim();
-    let s = s.strip_prefix("```json").or_else(|| s.strip_prefix("```")).unwrap_or(s);
+    let s = s
+        .strip_prefix("```json")
+        .or_else(|| s.strip_prefix("```"))
+        .unwrap_or(s);
     s.strip_suffix("```").unwrap_or(s)
 }
 
