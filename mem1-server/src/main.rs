@@ -31,11 +31,33 @@ async fn main() -> anyhow::Result<()> {
     if reranker.is_some() {
         tracing::info!("LLM listwise reranker enabled (RankGPT-style)");
     }
+    let query_rewriter = mem1_server::memory::query_rewrite::QueryRewriter::from_env();
+    if query_rewriter.is_some() {
+        tracing::info!("LLM multi-query rewriter enabled");
+    }
+
+    #[cfg(feature = "local-embed")]
+    let state = {
+        let cross_encoder = mem1_server::memory::local_rerank::LocalCrossEncoder::from_env();
+        if cross_encoder.is_some() {
+            tracing::info!("embedded cross-encoder reranker enabled (tract, in-process)");
+        }
+        Arc::new(AppState {
+            store,
+            embedder,
+            extractor,
+            reranker,
+            query_rewriter,
+            cross_encoder,
+        })
+    };
+    #[cfg(not(feature = "local-embed"))]
     let state = Arc::new(AppState {
         store,
         embedder,
         extractor,
         reranker,
+        query_rewriter,
     });
 
     let app = Router::new()

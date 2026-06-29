@@ -49,3 +49,4 @@ toolchain_data/
 
 .claude/worktrees/
 .claude/
+mem1-server/rerank_model/
