@@ -7,7 +7,7 @@ pub mod llm_extract;
 pub mod local_embed;
 #[cfg(feature = "local-embed")]
 pub mod local_rerank;
-pub mod model;
 pub mod mmr;
+pub mod model;
 pub mod query_rewrite;
 pub mod rerank;

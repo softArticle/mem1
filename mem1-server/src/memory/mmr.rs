@@ -98,11 +98,9 @@ pub fn mmr_order(
         for (pos, &cand) in remaining.iter().enumerate() {
             let max_sim_to_selected = selected
                 .iter()
-                .map(|&s| {
-                    match (&embeddings[cand], &embeddings[s]) {
-                        (Some(a), Some(b)) => cosine(a, b),
-                        _ => 0.0,
-                    }
+                .map(|&s| match (&embeddings[cand], &embeddings[s]) {
+                    (Some(a), Some(b)) => cosine(a, b),
+                    _ => 0.0,
                 })
                 .fold(0.0_f32, f32::max);
             let score = lambda * rel[cand] - (1.0 - lambda) * max_sim_to_selected;

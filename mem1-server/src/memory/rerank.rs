@@ -32,7 +32,10 @@ impl LlmReranker {
         // `crossencoder` is served by the embedded LocalCrossEncoder (tract,
         // in-process) — see local_rerank.rs. This HTTP/LLM reranker only handles
         // the listwise `openai` provider.
-        let provider = match std::env::var("MEM1_RERANK_PROVIDER").unwrap_or_default().as_str() {
+        let provider = match std::env::var("MEM1_RERANK_PROVIDER")
+            .unwrap_or_default()
+            .as_str()
+        {
             "openai" => RerankProvider::OpenAiListwise,
             _ => return None,
         };
