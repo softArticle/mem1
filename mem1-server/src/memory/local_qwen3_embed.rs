@@ -29,13 +29,14 @@ const TOKENIZER_FILENAME: &str = "tokenizer.json";
 const WEIGHTS_FILENAME: &str = "model.safetensors";
 
 pub struct Qwen3Embedder {
-    config: Config,
-    weights_path: std::path::PathBuf,
+    /// A pristine model that has never been forwarded, so its KV cache is empty.
+    /// Each embed clones it (Arc-backed weight tensors → cheap, ~no copy) to get a
+    /// fresh empty-cache model, sidestepping candle's private clear_kv_cache and
+    /// avoiding the ~4s full rebuild per call.
+    pristine: Mutex<Model>,
     tokenizer: Tokenizer,
+    max_length: usize,
     device: Device,
-    /// Serialize forward passes: candle tensors aren't trivially Sync across the
-    /// rebuilt-model approach, and embedding is called from spawn_blocking.
-    lock: Mutex<()>,
 }
 
 impl Qwen3Embedder {
@@ -57,21 +58,33 @@ impl Qwen3Embedder {
                 )));
             }
         }
-        let config: Config = serde_json::from_slice(
+        let mut config: Config = serde_json::from_slice(
             &std::fs::read(&config_path)
                 .map_err(|e| Error::Embedding(format!("qwen3 read config: {e}")))?,
         )
         .map_err(|e| Error::Embedding(format!("qwen3 parse config: {e}")))?;
+        // Cap the RoPE table size. The model declares max_position_embeddings=32768,
+        // so every rebuilt Model recomputes a 32768 x (head_dim/2) sin/cos matmul —
+        // the dominant cost of the rebuild-per-embed approach. mem1 memories are
+        // short (a fact/turn), so a much smaller window suffices. Tokens beyond
+        // max_length are truncated. Configurable via MEM1_QWEN3_MAX_LENGTH.
+        let max_length: usize = std::env::var("MEM1_QWEN3_MAX_LENGTH")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(512);
+        if config.max_position_embeddings > max_length {
+            config.max_position_embeddings = max_length;
+        }
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| Error::Embedding(format!("qwen3 tokenizer: {e}")))?;
-        // Validate the weights load once at startup (fail fast on a bad dir).
-        let _ = Self::build_model(&config, &weights_path, &Device::Cpu)?;
+        // Build the pristine model once. It is never forwarded directly, so its KV
+        // cache stays empty — each embed clones it for a fresh empty-cache model.
+        let pristine = Self::build_model(&config, &weights_path, &Device::Cpu)?;
         Ok(Self {
-            config,
-            weights_path,
+            pristine: Mutex::new(pristine),
             tokenizer,
+            max_length,
             device: Device::Cpu,
-            lock: Mutex::new(()),
         })
     }
 
@@ -91,12 +104,15 @@ impl Qwen3Embedder {
         if text.is_empty() {
             return Ok(Vec::new());
         }
-        let _guard = self
-            .lock
+        let guard = self
+            .pristine
             .lock()
             .map_err(|e| Error::Embedding(format!("qwen3 lock: {e}")))?;
-        // Fresh model per call so the decoder KV cache never accumulates.
-        let mut model = Self::build_model(&self.config, &self.weights_path, &self.device)?;
+        // Clone the pristine (empty-cache) model: Arc-backed weights make this cheap,
+        // and the clone starts with a fresh empty KV cache, so embeddings stay
+        // independent without rebuilding the model.
+        let mut model = guard.clone();
+        drop(guard);
         let enc = self
             .tokenizer
             .encode(text, true)
@@ -105,6 +121,9 @@ impl Qwen3Embedder {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
+        // Truncate to the RoPE window (max_length); last-token pooling still gets a
+        // representative final token for the (clipped) sequence.
+        let ids: Vec<u32> = ids.into_iter().take(self.max_length).collect();
         let n = ids.len();
         let input = Tensor::new(ids.as_slice(), &self.device)
             .and_then(|t| t.reshape((1, n)))
