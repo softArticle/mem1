@@ -118,11 +118,6 @@ fn rrf_graph_weight() -> f32 {
 }
 const MAX_GRAPH_ENTITIES_PER_MEMORY: usize = 16;
 const MAX_GRAPH_SEEDS: usize = 8;
-const QUERY_ENTITY_STOPWORDS: &[&str] = &[
-    "about", "after", "again", "also", "and", "are", "before", "did", "does", "for", "from", "had",
-    "has", "have", "her", "his", "how", "into", "she", "that", "the", "their", "them", "they",
-    "this", "was", "what", "when", "where", "which", "who", "why", "with", "you",
-];
 
 /// Build a shorter keyword query from the longest 2 terms (len >= 2), so FTS AND-semantics
 /// can match when the full query has stopwords like "what does" that are not in the document.
@@ -145,7 +140,7 @@ fn normalize_entity(name: &str) -> String {
 }
 
 fn is_query_stopword(normalized: &str) -> bool {
-    QUERY_ENTITY_STOPWORDS.contains(&normalized)
+    crate::memory::stopwords::is_stopword(normalized)
 }
 
 fn is_acronym_token(token: &str) -> bool {

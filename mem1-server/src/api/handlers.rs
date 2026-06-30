@@ -444,17 +444,12 @@ pub async fn search_memories_svc(
         // post-MMR rows by descending count of distinct query content-terms found as
         // substrings, ties preserving MMR order.
         if std::env::var("MEM1_LEXICAL_BOOST").as_deref() == Ok("1") {
-            const STOPWORDS: &[&str] = &[
-                "the", "and", "what", "when", "where", "who", "how", "why", "which", "for", "are",
-                "was", "were", "with", "this", "that", "from", "has", "have", "had", "you", "your",
-                "did", "does", "into", "about",
-            ];
             let terms: Vec<String> = req
                 .query
                 .split(|c: char| !c.is_alphanumeric())
                 .filter(|t| t.len() >= 3)
                 .map(|t| t.to_lowercase())
-                .filter(|t| !STOPWORDS.contains(&t.as_str()))
+                .filter(|t| !crate::memory::stopwords::is_stopword(t))
                 .collect();
             if !terms.is_empty() {
                 let scored: Vec<usize> = rows

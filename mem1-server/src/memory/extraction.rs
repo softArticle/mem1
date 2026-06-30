@@ -35,11 +35,63 @@ pub fn extract_facts(sources: &[SourceText]) -> Vec<ExtractedFact> {
         .collect()
 }
 
+/// Detect the dominant language of `text` and return a short code (en/zh/ja/
+/// ko/...). Uses `whatlang` (n-gram statistical identification, ~100 languages)
+/// instead of a hardcoded character-range heuristic — the old version mislabeled
+/// Japanese/Korean as "zh" because their scripts fall in the CJK range it
+/// checked. A fast ASCII path short-circuits the common English case, and a
+/// script-based fallback covers very short inputs where whatlang abstains.
 pub fn detect_language(text: &str) -> &'static str {
-    if text.chars().any(is_cjk) {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return "unknown";
+    }
+    // Fast path: pure-ASCII alphabetic text is overwhelmingly English here, and
+    // whatlang is unreliable on short ASCII snippets.
+    let has_alpha = trimmed.chars().any(|c| c.is_alphabetic());
+    if has_alpha && trimmed.is_ascii() {
+        return "en";
+    }
+    if let Some(info) = whatlang::detect(trimmed) {
+        if let Some(code) = lang_short_code(info.lang()) {
+            return code;
+        }
+    }
+    // Fallback for inputs whatlang abstains on (e.g. a single CJK word): classify
+    // by script so we still distinguish the main CJK languages.
+    script_fallback(trimmed)
+}
+
+fn lang_short_code(lang: whatlang::Lang) -> Option<&'static str> {
+    use whatlang::Lang;
+    Some(match lang {
+        Lang::Eng => "en",
+        Lang::Cmn => "zh",
+        Lang::Jpn => "ja",
+        Lang::Kor => "ko",
+        Lang::Spa => "es",
+        Lang::Fra => "fr",
+        Lang::Deu => "de",
+        Lang::Rus => "ru",
+        Lang::Por => "pt",
+        Lang::Ita => "it",
+        Lang::Ara => "ar",
+        Lang::Hin => "hi",
+        _ => return None,
+    })
+}
+
+fn script_fallback(text: &str) -> &'static str {
+    if text.chars().any(is_hiragana_katakana) {
+        "ja"
+    } else if text.chars().any(is_hangul) {
+        "ko"
+    } else if text.chars().any(is_han) {
         "zh"
-    } else if text.chars().any(|c| c.is_ascii_alphabetic()) {
-        "en"
+    } else if text.chars().any(|c| c.is_alphabetic()) {
+        // Some non-Latin alphabetic script whatlang didn't map; "unknown" beats
+        // a wrong guess.
+        "unknown"
     } else {
         "unknown"
     }
@@ -88,11 +140,16 @@ fn is_fact_like(text: &str) -> bool {
     text.chars().any(|c| c.is_alphanumeric())
 }
 
-fn is_cjk(ch: char) -> bool {
-    ('\u{4e00}'..='\u{9fff}').contains(&ch)
-        || ('\u{3400}'..='\u{4dbf}').contains(&ch)
-        || ('\u{3040}'..='\u{30ff}').contains(&ch)
-        || ('\u{ac00}'..='\u{d7af}').contains(&ch)
+fn is_han(ch: char) -> bool {
+    ('\u{4e00}'..='\u{9fff}').contains(&ch) || ('\u{3400}'..='\u{4dbf}').contains(&ch)
+}
+
+fn is_hiragana_katakana(ch: char) -> bool {
+    ('\u{3040}'..='\u{30ff}').contains(&ch)
+}
+
+fn is_hangul(ch: char) -> bool {
+    ('\u{ac00}'..='\u{d7af}').contains(&ch)
 }
 
 #[cfg(test)]
@@ -151,5 +208,41 @@ mod tests {
         }]);
 
         assert!(facts.is_empty());
+    }
+
+    #[test]
+    fn detect_language_distinguishes_cjk_languages() {
+        use super::detect_language;
+        // The old heuristic returned "zh" for all of these (CJK char range).
+        assert_eq!(
+            detect_language("Alice lives in Paris and likes Rust."),
+            "en"
+        );
+        assert_eq!(detect_language("张伟住在北京，喜欢喝茶。"), "zh");
+        assert_eq!(
+            detect_language("田中さんは東京に住んでいて、コーヒーが好きです。"),
+            "ja"
+        );
+        assert_eq!(
+            detect_language("앨리스는 파리에 살고 러스트를 좋아합니다."),
+            "ko"
+        );
+    }
+
+    #[test]
+    fn detect_language_short_cjk_word_falls_back_by_script() {
+        use super::detect_language;
+        // whatlang abstains on very short inputs; the script fallback still
+        // separates the CJK languages instead of lumping them as "zh".
+        assert_eq!(detect_language("カタカナ"), "ja");
+        assert_eq!(detect_language("한글"), "ko");
+        assert_eq!(detect_language("中文"), "zh");
+    }
+
+    #[test]
+    fn detect_language_empty_is_unknown() {
+        use super::detect_language;
+        assert_eq!(detect_language("   "), "unknown");
+        assert_eq!(detect_language("123 !!!"), "unknown");
     }
 }

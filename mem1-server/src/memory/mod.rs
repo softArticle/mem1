@@ -11,3 +11,4 @@ pub mod mmr;
 pub mod model;
 pub mod query_rewrite;
 pub mod rerank;
+pub mod stopwords;
