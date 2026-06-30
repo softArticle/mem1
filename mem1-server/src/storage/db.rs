@@ -50,10 +50,17 @@ pub async fn ensure_schema(db: &Db) -> Result<(), Error> {
     )
     .await
     .map_err(|e| Error::Storage(anyhow::anyhow!("define search index: {e}")))?;
-    // Vector index for KNN (all-MiniLM-L6-v2 and compatible: 384 dimensions, cosine).
-    db.query(
-        "DEFINE INDEX IF NOT EXISTS memories_embedding_hnsw ON TABLE memories COLUMNS embedding HNSW DIMENSION 384 DIST COSINE;",
-    )
+    // Vector index for KNN. Dimension must match the active embedder:
+    // all-MiniLM-L6-v2 = 384 (default), Qwen3-Embedding-0.6B = 1024, etc.
+    // Configurable via MEM1_EMBED_DIM. Parsed as usize so the value is never
+    // attacker-controlled string interpolation.
+    let dim: usize = std::env::var("MEM1_EMBED_DIM")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(384);
+    db.query(format!(
+        "DEFINE INDEX IF NOT EXISTS memories_embedding_hnsw ON TABLE memories COLUMNS embedding HNSW DIMENSION {dim} DIST COSINE;"
+    ))
     .await
     .map_err(|e| Error::Storage(anyhow::anyhow!("define vector index: {e}")))?;
     Ok(())

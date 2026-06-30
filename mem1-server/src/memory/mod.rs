@@ -6,6 +6,8 @@ pub mod llm_extract;
 #[cfg(feature = "local-embed")]
 pub mod local_embed;
 #[cfg(feature = "local-embed")]
+pub mod local_qwen3_embed;
+#[cfg(feature = "local-embed")]
 pub mod local_rerank;
 pub mod mmr;
 pub mod model;

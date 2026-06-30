@@ -53,3 +53,4 @@ toolchain_data/
 .claude/worktrees/
 .claude/
 mem1-server/rerank_model/
+mem1-server/qwen3_embed_model/

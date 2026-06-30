@@ -36,6 +36,23 @@ Question: {{question}}
 Answer in 5-6 words or less:
 """
 
+# Chinese answer prompt, selected when MEM1_EVAL_LANG=zh. Mirrors ANSWER_PROMPT
+# but drops the English word-count limit (unsuitable for Chinese) for a char limit.
+ANSWER_PROMPT_ZH = """
+你是一个智能记忆助手。只能使用下面提供的记忆来回答问题。
+对于"昨天、上周、上周六、去年、下个月"等相对时间，请根据记忆中显示的 Date 推算出事件发生的具体日期、月份或年份再作答；除非事件确实发生在该 Date，否则不要直接用记忆的 Date 作答。
+
+用户 {{speaker_1_user_id}} 的记忆：
+{{speaker_1_memories}}
+
+用户 {{speaker_2_user_id}} 的记忆：
+{{speaker_2_memories}}
+
+问题：{{question}}
+
+请用 20 字以内简洁作答：
+"""
+
 
 def memory_context_from_response(resp: dict) -> str:
     formatted_context = (resp.get("formatted_context") or "").strip()
@@ -57,7 +74,8 @@ def build_answer_prompt(
     speaker_2_memories: str,
     question: str,
 ) -> str:
-    template = Template(ANSWER_PROMPT)
+    prompt = ANSWER_PROMPT_ZH if os.getenv("MEM1_EVAL_LANG") == "zh" else ANSWER_PROMPT
+    template = Template(prompt)
     return template.render(
         speaker_1_user_id=speaker_1_user_id,
         speaker_2_user_id=speaker_2_user_id,

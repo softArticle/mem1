@@ -6,10 +6,24 @@ Avoids heavy deps (bert_score, sentence_transformers). Optional: install nltk fo
 from typing import Dict
 
 
+def _has_cjk(text: str) -> bool:
+    return any("一" <= ch <= "鿿" for ch in text)
+
+
 def simple_tokenize(text: str) -> list[str]:
     text = str(text).lower()
-    for c in ".,!?":
+    for c in ".,!?，。！？、；：":
         text = text.replace(c, " ")
+    # Chinese has no spaces; whitespace splitting would make the whole sentence one
+    # token and zero out BLEU/F1. Use jieba if available, else fall back to
+    # per-character segmentation (still far better than whole-sentence tokens).
+    if _has_cjk(text):
+        try:
+            import jieba
+
+            return [t for t in jieba.lcut(text) if t.strip()]
+        except ImportError:
+            return [ch for ch in text if not ch.isspace()]
     return text.split()
 
 

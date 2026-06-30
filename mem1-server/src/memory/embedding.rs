@@ -7,6 +7,8 @@ use super::download;
 #[cfg(feature = "local-embed")]
 use super::local_embed::LocalEmbedder;
 #[cfg(feature = "local-embed")]
+use super::local_qwen3_embed::Qwen3Embedder;
+#[cfg(feature = "local-embed")]
 use std::path::PathBuf;
 #[cfg(feature = "local-embed")]
 use std::sync::Arc;
@@ -20,6 +22,10 @@ pub enum Embedder {
     #[cfg(feature = "local-embed")]
     Local {
         inner: Arc<LocalEmbedder>,
+    },
+    #[cfg(feature = "local-embed")]
+    Qwen3 {
+        inner: Arc<Qwen3Embedder>,
     },
 }
 
@@ -35,6 +41,23 @@ impl Embedder {
             std::env::var("MEM1_EMBED_PROVIDER").unwrap_or_else(|_| default_provider.into());
         match provider.as_str() {
             "off" | "disabled" | "none" => Ok(Self::Off),
+            "qwen3" => {
+                #[cfg(feature = "local-embed")]
+                {
+                    let model_dir = std::env::var("MEM1_QWEN3_EMBED_DIR")
+                        .unwrap_or_else(|_| "qwen3_embed_model".to_string());
+                    let path = PathBuf::from(&model_dir);
+                    let inner = Qwen3Embedder::load(&path)?;
+                    tracing::info!(path = %path.display(), "Qwen3 embedder loaded (candle, in-process, 1024-dim)");
+                    Ok(Self::Qwen3 {
+                        inner: Arc::new(inner),
+                    })
+                }
+                #[cfg(not(feature = "local-embed"))]
+                Err(Error::InvalidInput(
+                    "MEM1_EMBED_PROVIDER=qwen3 requires the local-embed feature.".to_string(),
+                ))
+            }
             "openai" => {
                 let key = std::env::var("OPENAI_API_KEY")
                     .map_err(|_| Error::InvalidInput("OPENAI_API_KEY is required".to_string()))?;
@@ -158,6 +181,19 @@ impl Embedder {
             }
             #[cfg(feature = "local-embed")]
             Self::Local { inner } => {
+                let inner = Arc::clone(inner);
+                let text = text.to_string();
+                let vec = tokio::task::spawn_blocking(move || inner.embed_sync(&text))
+                    .await
+                    .map_err(|e| Error::Embedding(format!("spawn_blocking: {e}")))??;
+                if vec.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(vec))
+                }
+            }
+            #[cfg(feature = "local-embed")]
+            Self::Qwen3 { inner } => {
                 let inner = Arc::clone(inner);
                 let text = text.to_string();
                 let vec = tokio::task::spawn_blocking(move || inner.embed_sync(&text))
