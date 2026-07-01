@@ -21,8 +21,11 @@ build/
 mem1-server/embed_model/
 embed_model/
 rerank_model/
+# SurrealDB/RocksDB runtime stores (any *.db/ dir, e.g. mem1.db, mem1_dev.db)
+*.db/
 mem1.db/
 mem1-server/mem1.db/
+mem1-server/mem1_dev.db/
 
 # ---- Evaluation: generated outputs ----
 evaluation/results/
