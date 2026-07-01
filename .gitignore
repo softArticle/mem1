@@ -54,6 +54,9 @@ toolchain/
 toolchain_data/
 
 .claude/worktrees/
-.claude/
+# Ignore .claude runtime state, but keep committed skills/commands.
+.claude/*
+!.claude/skills/
+!.claude/commands/
 mem1-server/rerank_model/
 mem1-server/qwen3_embed_model/
