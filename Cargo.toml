@@ -5,6 +5,8 @@ members = ["mem1-server", "mem1-mcp"]
 [workspace.package]
 edition = "2021"
 version = "0.1.0"
+license = "Apache-2.0"
+repository = "https://github.com/982945902/mem1"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }

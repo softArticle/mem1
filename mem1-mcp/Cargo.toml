@@ -2,6 +2,8 @@
 name = "mem1-mcp"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "MCP (Model Context Protocol) stdio server for mem1 — embeds the mem1 store in-process and exposes memory tools to Claude Code, Codex, OpenCode, Pi, and other MCP clients."
 
 [[bin]]
